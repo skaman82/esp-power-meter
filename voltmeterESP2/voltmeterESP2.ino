@@ -1,3 +1,5 @@
+
+
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
@@ -41,7 +43,6 @@ float deviceCurrentWifi = 0.050;       // 50 mA in WiFi Mode
 float selfconsumption;
 
 
-//U8G2_SSD1306_128X32_UNIVISION_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);   // Adafruit ESP8266/32u4/ARM Boards + FeatherWing OLED
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 //U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
@@ -56,7 +57,6 @@ float min_cellvolts = 3.00;
 float batteryCapacityAh = 0;  // Full battery capacity in Ah eg 6.6 Ah
 byte orientation = 1;
 byte screen = 0; //default start screen (0-2)
-byte solarmode = 0;  //if in solarmode the system will check for minimum voltage (defined by "startupvoltage")
 byte wifiEnabled = 0;
 
 float startupvoltage = 16.0;
@@ -154,6 +154,7 @@ float last60Amps[60];  // Stores last 60 seconds of amp readings (1 per sec)
 unsigned long lastAmpSecondMillis = 0;
 bool hasLoggedThis10Min = false;
 bool hasLoggedThisHour = false;
+char timeChars[5] = {'0', '0', ':', '0', '0'};  // e.g. 00:00
 
 
 
@@ -177,28 +178,7 @@ const float lifepo4Capacity[lifepo4Points] = {100,   95,   90,   80,   60,   40,
 
 INA226_WE ina226 = INA226_WE(I2C_ADDRESS);
 
-void waitForVoltageReady() {
-  while (true) {
-    voltage = ina226.getBusVoltage_V();
-    mAmpere = ina226.getCurrent_mA();
 
-    float minma = 50;
-
-    Serial.print("SOLARMODE ACTIVE: Minimun voltage: "); 
-    Serial.println(startupvoltage); 
-    if (voltage >= startupvoltage) {
-      statsSaved = false; //enables savig routine when voltage drops again
-      break;  // Exit loop once voltage is stable
-    }
-    //ESCAPE WITH Button1 press if needed
-    else if (digitalRead(BUTTON1_PIN) == LOW) {
-      statsSaved = false; //enables savig routine when voltage drops again
-      break;  // Exit loop once voltage is stable
-    }
-    
-    delay(500);  // Wait and retry
-  }
-}
 
 // Helper to convert __TIME__ (e.g. "14:33:12") to a unique number
 int getCompileTimeSeed() {
@@ -356,17 +336,7 @@ if (isnan(batteryCapacityAh) || batteryCapacityAh < 0 || batteryCapacityAh > 100
   #endif
 }
 
- solarmode = EEPROM.read(mode_Address); //SolarMode 0/1
- if (solarmode > 1) {
-        solarmode = 0; //DEFAULT VALUE
-        EEPROM.put(mode_Address, solarmode); //Correct 
-        #ifdef ESP
-        EEPROM.commit();   // Also required on ESP32 to save changes to flash
-        #endif
-      }
-      if (solarmode == 1) {
-        screen = 1; //SET THE STATRUP SCREEN VIEW
-      }
+ 
 
 wifiEnabled = EEPROM.read(wifi_Address); //WiFimode 0/1
       if (wifiEnabled > 1) {
@@ -392,8 +362,6 @@ Serial.print("batteryCapacityAh ");
 Serial.println(batteryCapacityAh); 
 Serial.print("pricePerKWh "); 
 Serial.println(pricePerKWh); 
-Serial.print("Solarmode "); 
-Serial.println(solarmode);
 Serial.print("wifiEnabled "); 
 Serial.println(wifiEnabled); 
 Serial.print("orientation "); 
@@ -1068,14 +1036,11 @@ for (int i = 0; i < 60; i++) {
        reset = 1;
     }
 
-    else if ((menustep == 8) && (pressedbt == 1)) { //SOLAR MODE
+    else if ((menustep == 8) && (pressedbt == 1)) { //RTC SET
     
-      if (solarmode == 0) {
-      solarmode = 1;
-    }
-    else {
-      solarmode = 0;
-    }
+      //ENTER TIME SUMMENU
+      menu = 4;
+      menustep = 0;
     }
 
 
@@ -1100,7 +1065,6 @@ for (int i = 0; i < 60; i++) {
        EEPROM.put(cellAddress, cellcount); //cellcount
        EEPROM.put(cap_Address, batteryCapacityAh); //Capacity  > 999.9 Ah
        EEPROM.put(price_Address, pricePerKWh); //Price per kWh > 0,00 ct
-       EEPROM.put(mode_Address, solarmode); //solarmode setting
        EEPROM.write(screen_Address, screen);
        EEPROM.write(orientation_Address, orientation);
        EEPROM.put(remcap_Address, remainingCapacityAh); // remaining cap in Ah
@@ -1110,10 +1074,6 @@ for (int i = 0; i < 60; i++) {
        EEPROM.commit();   // Also required on ESP32 to save changes to flash
        #endif
         Serial.println("Settings saved");
-        Serial.print("solarmode ");
-        Serial.println(solarmode);
-        Serial.print("orientation ");
-        Serial.println(orientation);
 
     saved = 0;
     reset = 0;
@@ -1203,7 +1163,47 @@ else if (menu == 3) { // CHAR MOD MENU PRICE
     }
     
 }
+else if (menu == 4) { // CHAR MOD MENU TIME
 
+  if (pressedbt == 2) { // → Navigate character
+    menustep++;
+
+    if (menustep == 2) menustep++; // Skip colon
+    if (menustep > 5) menustep = 0;
+  }
+
+  if ((menustep != 2 && menustep != 5) && pressedbt == 1) { // ↑ Increment digit
+    char &c = timeChars[menustep];
+
+    if (c >= '0' && c <= '9') {
+      c++;
+
+      if (c > '9') c = '0';
+
+      // Range validation
+      if (menustep == 0 && c > '2') c = '0'; // First hour digit max 2
+      if (menustep == 1 && timeChars[0] == '2' && c > '3') c = '0'; // If H1=2, then H2 max 3
+      if (menustep == 3 && c > '5') c = '0'; // First minute digit max 5
+    }
+  }
+
+  else if (menustep == 5 && pressedbt == 1) { // Confirm and set RTC
+    int hours = (timeChars[0] - '0') * 10 + (timeChars[1] - '0');
+    int minutes = (timeChars[3] - '0') * 10 + (timeChars[4] - '0');
+
+    if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
+      rtc.adjust(DateTime(2025, 1, 1, hours, minutes, 0)); // Use dummy date
+      Serial.print("Time updated to: ");
+      Serial.print(hours);
+      Serial.print(":");
+      Serial.println(minutes);
+    }
+
+    // Exit to main menu
+    menu = 1;
+    menustep = 0;
+  }
+}
 
  if (pressedbt != 0) {
     Serial.print("Pressed button value: ");
@@ -1628,13 +1628,14 @@ else {
     }
 
     u8g2.setCursor(5, 56);
-    u8g2.println("Solar Mode ");
-    if (solarmode != 0) {
-      u8g2.println("ON");
+    u8g2.print("Set Time ");
+    u8g2.print(now.hour(), DEC);
+    u8g2.println(":");
+    if (now.minute() < 9) {
+    u8g2.print("0");
     }
-    else {
-      u8g2.println("OFF");
-    }
+    u8g2.print(now.minute(), DEC);
+ 
     
     u8g2.setCursor(5, 77);
     u8g2.println("Save & Exit");
@@ -1772,6 +1773,56 @@ void pricescreen() {
 
 
 
+void timescreen() {
+  // Populate timeChars[] with current time if this is the first call
+  static bool initialized = false;
+  if (!initialized) {
+    DateTime now = rtc.now();
+    int h = now.hour();
+    int m = now.minute();
+
+    timeChars[0] = '0' + (h / 10);
+    timeChars[1] = '0' + (h % 10);
+    timeChars[2] = ':'; // colon separator
+    timeChars[3] = '0' + (m / 10);
+    timeChars[4] = '0' + (m % 10);
+
+    initialized = true;
+  }
+
+  u8g2.firstPage();
+  do {
+    u8g2.setFont(u8g2_font_7x13B_tr);
+    u8g2.setCursor(5, 10);
+    u8g2.print("Set Time (24h)");
+
+    // Draw HH:MM characters
+    for (int i = 0; i < 5; i++) {
+      int x = 15 + i * 12;
+
+      if (i == 2) {
+        u8g2.setCursor(x, 30);
+        u8g2.print(":");
+        continue;
+      }
+
+      u8g2.setCursor(x, 30);
+      u8g2.print(timeChars[i]);
+
+      if (i == menustep) {
+        u8g2.drawFrame(x - 2, 18, 12, 14); // Highlight digit
+      }
+    }
+
+    // Draw EXIT button (as 6th step)
+    if (menustep == 5) {
+      u8g2.drawFrame(90, 20, 30, 16); // frame around "EXIT"
+    }
+    u8g2.setCursor(94, 32);
+    u8g2.print("OK");
+
+  } while (u8g2.nextPage());
+}
 
 
 void loop() {
@@ -1786,23 +1837,7 @@ void loop() {
   }
   buttoncheck();
 
-if (solarmode == 1) {
 
-
-//   save some stats if voltage getting low
-   if (voltage < startupvoltage && !statsSaved) {
-      // Save stats to EEPROM once
-      EEPROM.put(remcap_Address, remainingCapacityAh); // Remaining capacity in Ah
-      EEPROM.put(kwh_Address, totalKWh);               // Total kWh produced
-      #ifdef ESP
-      EEPROM.commit();  // Needed for some platforms like ESP
-      #endif
-      statsSaved = true;
-      Serial.println("Voltage dropped below startup voltage, stats saved.");
-    }
-
-
- if (voltage > startupvoltage) {  //DO USUAL STUFF IF VOLTAGE IS ABOVE startupvoltage
   if (menu == 0) {
   draw();
   }
@@ -1815,38 +1850,10 @@ if (solarmode == 1) {
    else if (menu == 3) {
   pricescreen();
   }
- }
- else { // CLEAR SCREEN if voltage drops startupvoltage
-  if (menu == 0) {
-  // clear screen
-    u8g2.clear();
+   else if (menu == 4) {
+  timescreen();
   }
-  else if (menu == 1) {
-  menuscreen();
-  }
-  else if (menu == 2) {
-  capscreen();
-  }
-   else if (menu == 3) {
-  pricescreen();
-  }
- }
 
-}
-else if (solarmode == 0) { //DO USUAL STUFF
-  if (menu == 0) {
-  draw();
-  }
-  else if (menu == 1) {
-  menuscreen();
-  }
-  else if (menu == 2) {
-  capscreen();
-  }
-   else if (menu == 3) {
-  pricescreen();
-  }
-}
 
 
 
