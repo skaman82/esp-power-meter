@@ -8,6 +8,7 @@
 Preferences preferences;  // Declare this globallychar AP_SSID[32];
 
 
+
 const char* ssid = "airport";
 const char* password = "babylon5";
 
@@ -24,6 +25,13 @@ static AsyncWebServer server(80);
 #include <EEPROM.h>
 #include <esp_system.h>
 
+#include "RTClib.h"
+RTC_DS3231 rtc;
+DateTime now;
+long nowSecs = 0;
+long lastEnergySecond = 0;
+long lastHourTimestamp = 0;
+long lastCapacityTimestamp = 0;
 
 //CONFIG START
 #define AP //USES Accespoint Mode instead of joining a preset Network
@@ -31,6 +39,15 @@ static AsyncWebServer server(80);
 float deviceCurrent = 0.017;           // 17 mA in normal mode
 float deviceCurrentWifi = 0.050;       // 50 mA in WiFi Mode
 float selfconsumption;
+
+
+//U8G2_SSD1306_128X32_UNIVISION_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);   // Adafruit ESP8266/32u4/ARM Boards + FeatherWing OLED
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+//U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
+//U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
 
 byte batteryType = 0; //0:LiIon; 1:LiPo; 2:LiFePO4;
 int cellcount = 1;            //define Cellcount of the Li-Ion battery
@@ -77,6 +94,7 @@ byte menustep = 0;
 #define I2C_ADDRESS 0x40
 unsigned long lastUpdateTime = millis(); // track last update time
 unsigned long bootTime = millis();
+unsigned long lastSensorMillis = 0;
 
 unsigned long lastUpdateMicros = 0;
 unsigned long previousMicros = 0;
@@ -125,7 +143,7 @@ bool statsSaved = true;
 // Energy tracking
 unsigned long lastEnergySecondMillis = 0;
 unsigned long hourStartMillis = 0;
-float accumulatedWh = 0;
+double accumulatedWh = 0.0;
 float hourlyKWh[12] = {0};  // stores last 12 hours kWh values
 float historyCapacity[72];  // 72 × 10min = 720min = 12h
 float historyVoltage[72] = {0};
@@ -135,8 +153,10 @@ int capacityIndex = 0;
 float maxA = 0.0;
 float maxA_min = 0.0;
 float last60Amps[60];  // Stores last 60 seconds of amp readings (1 per sec)
-unsigned long lastAmpSecondMillis = 0;
 
+unsigned long lastAmpSecondMillis = 0;
+bool hasLoggedThis10Min = false;
+bool hasLoggedThisHour = false;
 
 
 
@@ -156,12 +176,6 @@ const float lifepo4Voltage[lifepo4Points]  = {3.65, 3.45, 3.40, 3.35, 3.30, 3.25
 const float lifepo4Capacity[lifepo4Points] = {100,   95,   90,   80,   60,   40,   25,   10,    0};
 
 
-//U8G2_SSD1306_128X32_UNIVISION_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);   // Adafruit ESP8266/32u4/ARM Boards + FeatherWing OLED
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-//U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
-//U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 
 INA226_WE ina226 = INA226_WE(I2C_ADDRESS);
@@ -236,8 +250,8 @@ preferences.begin("esp32meter", false); // Open or create namespace
   pinMode(BUTTON2_PIN, INPUT_PULLUP);
 
   Wire.begin();
-  Wire.setClock(400000UL);
-  u8g2.setBusClock(400000UL);
+  //Wire.setClock(400000UL);
+  //u8g2.setBusClock(400000UL);
 
   ina226.init();
   Serial.println("INIT");  // shows the voltage measured
@@ -437,12 +451,40 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
   totalWh = totalKWh * 1000.0;
   totalPrice = totalKWh * pricePerKWh;
 
-  //CHECK FOR WOLTAGE IF SOLAR MODE IS ACTIVE
 
-  if (solarmode == 1) {
-    selfconsumption = deviceCurrentWifi;
-  waitForVoltageReady();  // Wait until voltage >= definedStartVoltage
+//RTC INIT
+ 
+ // if (! rtc.begin()) {
+ //   Serial.println("Couldn't find RTC");
+ //   Serial.flush();
+ //   abort();
+ // }
+
+  rtc.begin();
+
+  if (rtc.lostPower()) {
+    Serial.println("RTC lost power, let's set the time!");
+    // When time needs to be set on a new device, or after a power loss, the
+    // following line sets the RTC to the date & time this sketch was compiled
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    // This line sets the RTC with an explicit date & time, for example to set
+    // January 21, 2014 at 3am you would call:
+    // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
   }
+
+  // When time needs to be re-set on a previously configured device, the
+  // following line sets the RTC to the date & time this sketch was compiled
+  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  // This line sets the RTC with an explicit date & time, for example to set
+  // January 21, 2014 at 3am you would call:
+  // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
+
+
+DateTime now = rtc.now();
+
+
+
+//OLED INIT
 
   u8g2.begin();
   u8g2.setDisplayRotation(U8G2_R1);
@@ -513,6 +555,7 @@ if (wifiEnabled == 1) {
   // API Endpoints
   server.on("/data", HTTP_GET, [](AsyncWebServerRequest *request) {
     String json = "{";
+    json += "\"now\":" + String(nowSecs) + ",";   // Include timestamp in response
     json += "\"batteryType\":\"" + String(batteryType) + "\",";
     json += "\"cellcount\":" + String(cellcount) + ",";
     json += "\"watts\":" + String(watts) + ",";
@@ -662,46 +705,39 @@ float estimateCapacity(float voltage, const float* volts, const float* caps, int
 }
 
 
+void updateTime() {
+  now = rtc.now();
+  nowSecs = now.unixtime();
+}
 
 void sensorread() {
-
   ina226.readAndClearFlags();
   voltage = ina226.getBusVoltage_V();
   Ampere = ina226.getCurrent_A();
-  mAmpere = ina226.getCurrent_mA() ;
+  mAmpere = ina226.getCurrent_mA();
   watts = voltage * Ampere;
 
+  const float deadbandThreshold = 0.01; // 10 mA
 
+  // Determine direction and normalize Ampere
+  if (Ampere < -deadbandThreshold) {
+    cur_dir = 2; // Charging
+    Ampere = -Ampere;
+    watts = -watts;
+    mAmpere = -mAmpere;
+  } else if (Ampere > deadbandThreshold) {
+    cur_dir = 1; // Discharging
+  } else {
+    cur_dir = 0; // Idle
+    Ampere = 0;
+    mAmpere = 0;
+  }
 
-const float deadbandThreshold = 0.01; // 10 mA
+  float real_Ampere = Ampere + selfconsumption;
+  int real_mAmpere = (real_Ampere * 1000.0);
 
-// Determine direction and normalize Ampere
-if (Ampere < -deadbandThreshold) {
-  cur_dir = 2; // Charging
-  Ampere = -Ampere;
-  watts = -watts;
-  mAmpere = -mAmpere;
-} else if (Ampere > deadbandThreshold) {
-  cur_dir = 1; // Discharging
-} else {
-  cur_dir = 0; // Idle
-  Ampere = 0;
-  mAmpere = 0;
-}
-
-// Apply self-consumption **after** correcting direction
-float real_Ampere = Ampere + selfconsumption;
-int real_mAmpere = (real_Ampere * 1000.0);
-
-// === Update Max Amp Since Start ===
-if (Ampere > maxA) {
-  maxA = Ampere;
-}
-// === Update Max Watts Since Start ===
-if (watts > maxWatts) {
-  maxWatts = watts;
-}
-
+  if (Ampere > maxA) maxA = Ampere;
+  if (watts > maxWatts) maxWatts = watts;
 
   unsigned long currentMicros = micros();
 
@@ -710,29 +746,21 @@ if (watts > maxWatts) {
 
     if (abs(mAmpere) <= 4) mAmpere = 0;
 
-    //float usedAh = Ampere / 3600.0;  // Local, for this cycle
-    float usedmAh = (real_Ampere * 1000.0) / 3600.0;  // Convert A to mAh per second
+    float usedmAh = (real_Ampere * 1000.0) / 3600.0;
 
-if (cur_dir == 1) {  // Discharging
-  remainingCapacityAh -= usedmAh / 1000.0;
-  totalUsedmAh -= usedmAh;  // ✅ subtract when discharging
-}
-else if (cur_dir == 2) {  // Charging
-  remainingCapacityAh += usedmAh / 1000.0;
-  totalUsedmAh += usedmAh;  // ✅ add when charging
-}
-//keep safety clamps
-remainingCapacityAh = constrain(remainingCapacityAh, 0.0, batteryCapacityAh);
+    if (cur_dir == 1) {
+      remainingCapacityAh -= usedmAh / 1000.0;
+      totalUsedmAh -= usedmAh;
+    } else if (cur_dir == 2) {
+      remainingCapacityAh += usedmAh / 1000.0;
+      totalUsedmAh += usedmAh;
+    }
 
+    remainingCapacityAh = constrain(remainingCapacityAh, 0.0, batteryCapacityAh);
 
-    if (remainingCapacityAh < 0) remainingCapacityAh = 0;
-
-    // Prevent premature overwrite in first 5 seconds
     if (millis() > 5000) {
-      if (capacity >= 99.9)
-        remainingCapacityAh = batteryCapacityAh;
-      else if (capacity <= 0.5)
-        remainingCapacityAh = 0;
+      if (capacity >= 99.9) remainingCapacityAh = batteryCapacityAh;
+      else if (capacity <= 0.5) remainingCapacityAh = 0;
     }
 
     remainingCapacitymAh = remainingCapacityAh * 1000.0;
@@ -740,108 +768,102 @@ remainingCapacityAh = constrain(remainingCapacityAh, 0.0, batteryCapacityAh);
     float deltaTimeHours = (currentMicros - lastUpdateMicros) / 3600000000.0;
     lastUpdateMicros = currentMicros;
 
-   if (cur_dir == 2) {
-  totalWh += watts * deltaTimeHours;
-  totalKWh = totalWh / 1000.0;
-  totalPrice = totalKWh * pricePerKWh;
-}
+    if (cur_dir == 2) {
+      totalWh += watts * deltaTimeHours;
+      totalKWh = totalWh / 1000.0;
+      totalPrice = totalKWh * pricePerKWh;
+    }
 
     cellvolt = voltage / cellcount;
-    //cellvolt = constrain(cellvolt, min_cellvolts, max_cellvolts);
-    //capacity = ((cellvolt - min_cellvolts) / (max_cellvolts - min_cellvolts)) * 100.0;
-    //capacity = constrain(capacity, 0.0, 100.0);
 
-// Lookup capacity from appropriate curve
-switch (batteryType) {
-  case 0: // Li-ion
-    capacity = estimateCapacity(cellvolt, liionVoltage, liionCapacity, liionPoints);
-    break;
-  case 1: // LiPo
-    capacity = estimateCapacity(cellvolt, lipoVoltage, lipoCapacity, lipoPoints);
-    break;
-  case 2: // LiFePO4
-    capacity = estimateCapacity(cellvolt, lifepo4Voltage, lifepo4Capacity, lifepo4Points);
-    break;
-  default:
-    capacity = 0.0;
-    break;
-}
+    switch (batteryType) {
+      case 0:
+        capacity = estimateCapacity(cellvolt, liionVoltage, liionCapacity, liionPoints);
+        break;
+      case 1:
+        capacity = estimateCapacity(cellvolt, lipoVoltage, lipoCapacity, lipoPoints);
+        break;
+      case 2:
+        capacity = estimateCapacity(cellvolt, lifepo4Voltage, lifepo4Capacity, lifepo4Points);
+        break;
+      default:
+        capacity = 0.0;
+        break;
+    }
 
-capacity = constrain(capacity, 0.0, 100.0);
+    capacity = constrain(capacity, 0.0, 100.0);
 
-    if (cur_dir == 1) {  // Discharging
+    if (cur_dir == 1) {
       runtimeHours = (Ampere > 0) ? (remainingCapacityAh / Ampere) : -1;
-    } else if (cur_dir == 2) {  // Charging
+    } else if (cur_dir == 2) {
       runtimeHours = (Ampere > 0) ? ((batteryCapacityAh - remainingCapacityAh) / Ampere) : -1;
     } else {
-      runtimeHours = 0;  // Unknown or idle
+      runtimeHours = 0;
     }
 
     hours = static_cast<int>(runtimeHours);
     minutes = static_cast<int>((runtimeHours - hours) * 60);
   }
 
-  // Track energy once per second
+  // === Max current in last 60 seconds ===
   if (millis() - lastEnergySecondMillis >= 1000) {
     lastEnergySecondMillis = millis();
 
-  // === Shift and Update Last 60 Seconds of Ampere Readings ===
-  for (int i = 0; i < 59; i++) {
-    last60Amps[i] = last60Amps[i + 1];
-  }
+    for (int i = 0; i < 59; i++) {
+      last60Amps[i] = last60Amps[i + 1];
+    }
     last60Amps[59] = Ampere;
 
-    // === Calculate Max Amp in Last 60 Seconds ===
     maxA_min = 0.0;
     for (int i = 0; i < 60; i++) {
-      if (last60Amps[i] > maxA_min) {
-        maxA_min = last60Amps[i];
-      }
+      if (last60Amps[i] > maxA_min) maxA_min = last60Amps[i];
+    }
+  }
+
+  // === Accumulate Wh while charging only ===
+  if (cur_dir == 2) {
+    accumulatedWh += watts / 3600.0;  // Convert W to Wh per second
+  }
+
+  // === RTC Logging ===
+  DateTime now = rtc.now();
+
+  // Log every 10 minutes on the dot
+  if (now.minute() % 10 == 0 && now.second() == 0) {
+  if (!hasLoggedThis10Min) {
+    hasLoggedThis10Min = true;
+
+    // Shift both arrays
+    for (int i = 0; i < 71; i++) {
+      historyCapacity[i] = historyCapacity[i + 1];
+      historyVoltage[i] = historyVoltage[i + 1];
     }
 
-
-
-if (cur_dir == 2) {
-  accumulatedWh += watts / 3600.0;  // Only accumulate during charging
+    // Add latest values
+    historyCapacity[71] = capacity;
+    historyVoltage[71] = voltage;
+  }
+} else {
+  hasLoggedThis10Min = false;
 }
-    // Rotate hourly buffer every hour
-    if (millis() - hourStartMillis >= 3600000UL) {
-      hourStartMillis += 3600000UL;
 
-      // Shift data left by 1 (drop oldest)
+  // Log energy hourly on the dot
+  if (now.minute() == 0 && now.second() == 0) {
+    if (!hasLoggedThisHour) {
+      hasLoggedThisHour = true;
+
       for (int i = 0; i < 11; i++) {
-  hourlyKWh[i] = hourlyKWh[i + 1];
-}
+        hourlyKWh[i] = hourlyKWh[i + 1];
+      }
 
-      // Store last hour's kWh at index 11
-      hourlyKWh[11] = accumulatedWh / 1000.0;   // Convert Wh to kWh
+      hourlyKWh[11] = accumulatedWh / 1000.0;  // Wh → kWh
       accumulatedWh = 0;
     }
+  } else {
+    hasLoggedThisHour = false;
   }
-
-
-// Track capacity every 5 minutes (5 * 60 * 1000 = 300000 ms)
-if (millis() - lastCapacityMinuteMillis >= 600000UL) {  // 10 min
-  lastCapacityMinuteMillis += 600000UL;
-
-  // Shift array left by one (Capacity)
-  for (int i = 0; i < 71; i++) {
-    historyCapacity[i] = historyCapacity[i + 1];
-  }
-
-  // Add latest capacity to end
-  historyCapacity[71] = capacity;
-
-// Shift array left by one (Voltage)
-  for (int i = 0; i < 71; i++) {
-    historyVoltage[i] = historyVoltage[i + 1];
-  }
-  historyVoltage[71] = voltage;  // Store the bus voltage
 }
 
-
-
-}
 
 
 
@@ -1032,7 +1054,7 @@ for (int i = 0; i < 12; i++) {
   hourlyKWh[i] = 0.0;
 }
 for (int i = 0; i < 72; i++) {
-  historyCapacity[i] = 0.0;
+  historyCapacity[i] = 0;
   historyVoltage[i] = 0.0;
 }
 for (int i = 0; i < 60; i++) {
@@ -1753,8 +1775,13 @@ void pricescreen() {
 void loop() {
   handleButton(BUTTON1_PIN, button1State, button1PressTime, button1Handled, 1);
   handleButton(BUTTON2_PIN, button2State, button2PressTime, button2Handled, 2);
-  
-  sensorread();
+
+//GET TIME
+  if (millis() - lastSensorMillis >= 1000) {
+  lastSensorMillis = millis();
+  updateTime();    // Update RTC time every second
+  sensorread();    // Also call your sensor reading logic
+  }
   buttoncheck();
 
 if (solarmode == 1) {

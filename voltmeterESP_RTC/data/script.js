@@ -356,8 +356,8 @@ function applyData(data) {
     const timeStr = `${hh}:${mm}:${ss}`;
     document.getElementById("rtc-time").textContent = timeStr;
   }
-
 }
+
 
 
 function updateSliderHeight() {
@@ -641,7 +641,7 @@ function generateTimeLabels(nowSecs, points, intervalSec, roundToNearest = false
   let baseDate = new Date(nowSecs * 1000);
 
   //console.log("nowSecs (Unix seconds):", nowSecs);
-  //console.log("Rounded base time (UTC):", roundToNearest10MinUTC(new Date(nowSecs * 1000)));
+  console.log("Rounded base time (UTC):", roundToNearest10MinUTC(new Date(nowSecs * 1000)));
 
   if (roundToNearest) {
     baseDate = roundToNearest10MinUTC(baseDate);

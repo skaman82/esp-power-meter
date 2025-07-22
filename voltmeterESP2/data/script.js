@@ -15,6 +15,7 @@ let slideIndex = 0; // or whatever the default is
 
 
 const simulatedData = {
+  now: Math.floor(Date.now() / 1000),
   batteryType: 0,
   cellcount: 4,
   watts: 123,
@@ -136,6 +137,10 @@ function fetchData() {
   if (simulated) {
     applyData(simulatedData);
     setSlide(simulatedData.screen);  
+    // Also render charts with simulated data and simulated timestamp
+    renderVoltageChart(simulatedData.historyVoltage, simulatedData.now);
+    renderCapacityChart(simulatedData.historyCapacity, simulatedData.now);
+    // Call your other chart rendering functions here, passing simulatedData and simulatedData.now
     return;
   }
 
@@ -152,8 +157,14 @@ function fetchData() {
         setSlide(data.screen, false); // false disables user animation + avoids lock
         isAnimating = false;          // just to be extra safe
       }
+
+      // Render charts with fresh data & synced time
+      renderVoltageChart(data.historyVoltage, data.now);
+      renderCapacityChart(data.historyCapacity, data.now);
+      // Call your other chart rendering functions here, passing 'data' and 'data.now'
+
     })
-    //.catch(error => console.error("Fetch failed:", error));
+    .catch(error => console.error("Fetch failed:", error));
 }
 
 
@@ -271,10 +282,10 @@ function applyData(data) {
 
   // Render the active chart(s)
   if (activeSlide === 0) {
-    renderVoltageChart(Array.isArray(data.historyVoltage) ? data.historyVoltage : []);
-    renderCapacityChart(Array.isArray(data.historyCapacity) ? data.historyCapacity : []);
+    renderVoltageChart(Array.isArray(data.historyVoltage) ? data.historyVoltage : [], data.now);
+    renderCapacityChart(Array.isArray(data.historyCapacity) ? data.historyCapacity : [], data.now);
   } else if (activeSlide === 1) {
-    renderKWhBarChart(Array.isArray(data.hourlyKWh) ? data.hourlyKWh : []);
+    renderKWhBarChart(Array.isArray(data.hourlyKWh) ? data.hourlyKWh : [], data.now);
   } else if (activeSlide === 2) {
     if (Array.isArray(data.last60Amps)) {
       renderLast60AmpsChart(data.last60Amps);
@@ -331,8 +342,20 @@ function applyData(data) {
   if (data.maxWatts !== undefined) {
     document.querySelectorAll(".maxWatts").forEach(el => el.textContent = data.maxWatts.toFixed(0) + " W");
   }
-}
 
+
+if (typeof data.now === "number") {
+  const rtcDate = new Date(data.now * 1000); // Convert Unix timestamp to JS Date in UTC
+
+  // Format as HH:MM:SS without timezone shift
+  const hh = String(rtcDate.getUTCHours()).padStart(2, '0');
+  const mm = String(rtcDate.getUTCMinutes()).padStart(2, '0');
+  const ss = String(rtcDate.getUTCSeconds()).padStart(2, '0');
+  
+  const timeStr = `${hh}:${mm}:${ss}`;
+  document.getElementById("rtc-time").textContent = timeStr;
+}
+}
 
 function updateSliderHeight() {
   const sliderContainer = document.querySelector('.slider-container');
@@ -342,7 +365,6 @@ function updateSliderHeight() {
     sliderContainer.style.height = newHeight + 'px';
   }
 }
-
 
 
 
@@ -613,29 +635,57 @@ function destroyInactiveCharts(active) {
 
 
 
-// Chart Voltage
+// Utility: Generate time labels for line/bar charts (UTC)
+function generateTimeLabels(nowSecs, points, intervalSec, roundToNearest = false) {
+  let baseDate = new Date(nowSecs * 1000);
 
-function renderVoltageChart(data) {
+  //console.log("nowSecs (Unix seconds):", nowSecs);
+  //console.log("Rounded base time (UTC):", roundToNearest10MinUTC(new Date(nowSecs * 1000)));
+
+  if (roundToNearest) {
+    baseDate = roundToNearest10MinUTC(baseDate);
+  }
+  const baseMs = baseDate.getTime();
+
+  return Array.from({ length: points }, (_, i) => {
+    const offsetMs = (points - 1 - i) * intervalSec * 1000;
+    const t = new Date(baseMs - offsetMs);
+    const hh = String(t.getUTCHours()).padStart(2, '0');
+    const mm = String(t.getUTCMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+  });
+}
+
+// Utility: Round a Date object down to nearest 10-minute boundary (UTC)
+function roundToNearest10MinUTC(date) {
+  date = new Date(date.getTime());
+  date.setUTCSeconds(0, 0);
+  const minutes = date.getUTCMinutes();
+  date.setUTCMinutes(minutes - (minutes % 10));
+  return date;
+}
+
+
+
+
+
+
+
+
+// Voltage Chart
+function renderVoltageChart(data, nowSecs) {
   const ctx = document.getElementById('voltageChart').getContext('2d');
 
-  // Create a vertical gradient (top to bottom)
-const gradient = ctx.createLinearGradient(0, 0, 0, ctx.canvas.height);
-gradient.addColorStop(0, 'rgba(92, 214, 110, 0.8)');   // Top
-gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');     // Bottom
-
-
-
-  const voltageData = Array.isArray(data) && data.length
-    ? data.slice(-72).map(v => parseFloat(v) || 0)
+  const voltageData = Array.isArray(data) && data.length === 72
+    ? data.map(v => parseFloat(v) || 0)
     : Array(72).fill(0);
 
-  // Labels: Start from 10min ago, not 0m
-  const labels = Array.from({ length: 72 }, (_, i) => {
-    const minsAgo = (72 - i) * 10; // start from 720min (12h) down to 10min
-    const h = Math.floor(minsAgo / 60);
-    const m = minsAgo % 60;
-    return `${h}h ${m}m ago`;
-  });
+  const labels = generateTimeLabels(nowSecs, 72, 600, true); // 600s = 10min, rounded
+
+  // Gradient
+  const gradient = ctx.createLinearGradient(0, 0, 0, ctx.canvas.height);
+  gradient.addColorStop(0, 'rgba(92, 214, 110, 0.8)');
+  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
   if (voltageChart) {
     voltageChart.data.labels = labels;
@@ -652,7 +702,6 @@ gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');     // Bottom
         label: 'Voltage',
         data: voltageData,
         borderColor: '#5CD66E',
-        //backgroundColor: 'rgba(92, 214, 110, 0.3)',
         backgroundColor: gradient,
         fill: true,
         pointRadius: 0,
@@ -664,91 +713,42 @@ gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');     // Bottom
     options: {
       responsive: true,
       animation: true,
-      interaction: {
-        mode: 'index',         // <- highlight all points at index
-        intersect: false       // <- trigger highlight even if not exactly over a point
-      },
-      
+      interaction: { mode: 'index', intersect: false },
       scales: {
-        y: {
-          beginAtZero: false,
-          title: {
-            display: false,
-            text: 'Volts'
-          }
-        },
+        y: { beginAtZero: false },
         x: {
-          grid: {
-            display: false
-          },
-          border: {
-            display: true,
-            color: '#999999' 
-          },
-          ticks: {
-            display: true,
-            maxTicksLimit: 6,
-            callback: function(value, index, ticks) {
-              const label = this.getLabelForValue(value); // Get the full label
-              const match = label.match(/^(\d+)h/); // Extract hour number
-              if (match) {
-                return `${match[1]}h`;
-              }
-              return ''; // fallback
-            }
-          }
+          grid: { display: false },
+          border: { display: true, color: '#999' },
+          ticks: { maxTicksLimit: 6 }
         }
       },
       plugins: {
-        legend: {
-          display: false
-        },
+        legend: { display: false },
         tooltip: {
-          enabled: false, // Disable the built-in tooltip
+          enabled: false,
           mode: 'index',
           intersect: false,
           position: 'nearest',
-          external: () => {}, // Prevent fallback behavior
-          //external: externalTooltipHandler,
-          padding: 10,
-          cornerRadius: 6,
-          yAlign: 'bottom',
-          caretPadding: 50,
-          displayColors: false,
-          titleFont: {
-            size: 12,
-            weight: 'bold',
-            family: 'Arial'
-          },
-          bodyFont: {
-            size: 12,
-            family: 'Arial'
-          },
-          titleMarginBottom: 0,
+          external: () => {},
           callbacks: {
-            label: context => `Voltage: ${context.parsed.y.toFixed(2)} V`
+            label: ctx => `Voltage: ${ctx.parsed.y.toFixed(2)} V`
           }
         }
-        
       }
     },
     plugins: [verticalLinePlugin]
   });
 }
 
+// Capacity Chart
+function renderCapacityChart(data, nowSecs) {
+  const ctx = document.getElementById('capacityChart').getContext('2d');
 
-
-
-
-//Capacity Chart
-
-function renderCapacityChart(data) {
-  const ctx2 = document.getElementById('capacityChart').getContext('2d');
-
-  // Ensure exactly 72 values (12 hours of 10-min samples)
-  const capacityData = Array.isArray(data) && data.length
-    ? data.slice(-72).map(v => v || 0)
+  const capacityData = Array.isArray(data) && data.length === 72
+    ? data.map(v => v || 0)
     : Array(72).fill(0);
+
+  const labels = generateTimeLabels(nowSecs, 72, 600, true);
 
   const colors = capacityData.map(v => {
     if (v < 20) return "#E24F4F";
@@ -756,23 +756,15 @@ function renderCapacityChart(data) {
     return "#5CD66E";
   });
 
-  const labels = Array.from({ length: capacityData.length }, (_, i) => {
-    const totalMinutes = (capacityData.length - i) * 10;
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    return `${hours}h ${minutes.toString().padStart(2, '0')}m ago`;
-
-  });
-  
   if (capacityChart) {
     capacityChart.data.labels = labels;
     capacityChart.data.datasets[0].data = capacityData;
-    capacityChart.data.datasets[0].backgroundColor = colors; 
+    capacityChart.data.datasets[0].backgroundColor = colors;
     capacityChart.update();
     return;
   }
 
-  capacityChart = new Chart(ctx2, {
+  capacityChart = new Chart(ctx, {
     type: 'bar',
     data: {
       labels,
@@ -780,11 +772,8 @@ function renderCapacityChart(data) {
         label: 'Capacity',
         data: capacityData,
         backgroundColor: colors,
-        //borderColor: '#5CD66E',
-        //backgroundColor: 'rgba(92, 214, 110, 0.3)',
         fill: true,
         pointRadius: 1,
-        //borderWidth: 2,
         tension: 0.25,
         pointBackgroundColor: colors
       }]
@@ -792,15 +781,11 @@ function renderCapacityChart(data) {
     options: {
       responsive: true,
       animation: true,
-      interaction: {
-        mode: 'index',         // <- highlight all points at index
-        intersect: false       // <- trigger highlight even if not exactly over a point
-      },
-      
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         tooltip: {
-          enabled: false, // Disable default tooltip
-          external: () => {}, // Prevent fallback behavior
+          enabled: false,
+          external: () => {},
           mode: 'index',
           intersect: false,
           position: 'nearest',
@@ -809,55 +794,26 @@ function renderCapacityChart(data) {
           caretPadding: 50,
           displayColors: false,
           cornerRadius: 6,
-          titleFont: {
-            size: 12,
-            weight: 'bold',
-            family: 'Arial'
-          },
-          bodyFont: {
-            size: 12,
-            family: 'Arial'
-          },
+          titleFont: { size: 12, weight: 'bold', family: 'Arial' },
+          bodyFont: { size: 12, family: 'Arial' },
           titleMarginBottom: 0,
           callbacks: {
             label: context => `Capacity ${context.parsed.y.toFixed(0)} %`
           }
         },
-        legend: {
-          display: false
-        }
+        legend: { display: false }
       },
       scales: {
         y: {
           min: 0,
           max: 100,
           beginAtZero: true,
-          grace: '10%',
-          title: {
-            display: false,
-            text: 'Capacity (%)'
-          }
+          grace: '10%'
         },
         x: {
-          grid: {
-            display: false
-          },
-          border: {
-            display: true,
-            color: '#999999' 
-          },
-          ticks: {
-            display: true,
-            maxTicksLimit: 6,
-            callback: function(value, index, ticks) {
-              const label = this.getLabelForValue(value); // Get the full label
-              const match = label.match(/^(\d+)h/); // Extract hour number
-              if (match) {
-                return `${match[1]}h`;
-              }
-              return ''; // fallback
-            }
-          }
+          grid: { display: false },
+          border: { display: true, color: '#999999' },
+          ticks: { display: true, maxTicksLimit: 6 }
         }
       }
     },
@@ -867,16 +823,15 @@ function renderCapacityChart(data) {
 
 
 
-//CHART kWH
-
-function renderKWhBarChart(data) {
+// kWh Chart
+function renderKWhBarChart(data, nowSecs) {
   const ctx = document.getElementById('myChart').getContext('2d');
 
   const kwhData = Array.isArray(data) && data.length
-    ? data.slice(-12).map(v => Math.round((v || 0) * 1000)) // Convert kWh → Wh, remove decimals
+    ? data.slice(-12).map(v => Math.round((v || 0) * 1000)) // kWh → Wh
     : Array(12).fill(0);
 
-  const labels = ['12h ago', '11h ago', '10h ago', '9h ago', '8h ago', '7h ago', '6h ago', '5h ago', '4h ago', '3h ago', '2h ago', '1h ago'];
+  const labels = generateTimeLabels(nowSecs, 12, 3600, true).map(label => label.replace(/:\d{2}$/, ':00')); // round to hour
 
   if (kwhChart) {
     kwhChart.data.labels = labels;
@@ -892,25 +847,24 @@ function renderKWhBarChart(data) {
       datasets: [{
         label: 'Wh',
         data: kwhData,
-        backgroundColor: Array(12).fill('#4caf50'), // Initial color: green
+        backgroundColor: Array(12).fill('#4caf50'),
         borderWidth: 0
       }]
     },
     options: {
       responsive: true,
       animation: true,
-      
       onHover: (event, elements) => {
         const dataset = kwhChart.data.datasets[0];
         if (elements.length > 0) {
           const hoveredIndex = elements[0].index;
           dataset.backgroundColor = dataset.data.map((_, idx) =>
-            idx === hoveredIndex ? '#4caf50' : 'rgba(255, 255, 255, 0.1)' // hovered bar = green, others = grey
+            idx === hoveredIndex ? '#4caf50' : 'rgba(255, 255, 255, 0.1)'
           );
         } else {
-          dataset.backgroundColor = dataset.data.map(() => '#4caf50'); // reset all to green
+          dataset.backgroundColor = dataset.data.map(() => '#4caf50');
         }
-        kwhChart.update('none'); // skip animation for responsiveness
+        kwhChart.update('none');
       },
       scales: {
         y: {
@@ -922,12 +876,7 @@ function renderKWhBarChart(data) {
           border: { display: true, color: '#999' },
           ticks: {
             display: true,
-            maxTicksLimit: 6,
-            callback: function(value) {
-              const label = this.getLabelForValue(value);
-              const match = label.match(/^(\d+)h/);
-              return match ? `${match[1]}h` : '';
-            }
+            maxTicksLimit: 6
           }
         }
       },
@@ -943,7 +892,6 @@ function renderKWhBarChart(data) {
       }
     }
   });
-  
 }
 
 
