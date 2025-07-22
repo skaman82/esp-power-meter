@@ -11,7 +11,7 @@ RTC_DS3231 rtc;
 
 
 const char* ssid = "airport";
-const char* password = "password";
+const char* password = "babylon5";
 
 const char* AP_PASSWORD = "12345678";
 char AP_SSID[32];
@@ -28,8 +28,7 @@ static AsyncWebServer server(80);
 
 
 //CONFIG START
-//#define AP //USES Accespoint Mode instead of joining a preset Network
-#define ESP //PLEASE UNCOMMENT WHEN USING ESP HARDWARE
+#define AP //USES Accespoint Mode instead of joining a preset Network
 float deviceCurrent = 0.017;           // 17 mA in normal mode
 float deviceCurrentWifi = 0.050;       // 50 mA in WiFi Mode
 float selfconsumption;
@@ -45,6 +44,17 @@ byte solarmode = 0;  //if in solarmode the system will check for minimum voltage
 byte wifiEnabled = 0;
 
 float startupvoltage = 16.0;
+
+
+
+//U8G2_SSD1306_128X32_UNIVISION_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);   // Adafruit ESP8266/32u4/ARM Boards + FeatherWing OLED
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+//U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
+//U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+
 //CONFIG END
 
 #define BUTTON1_PIN 1
@@ -147,16 +157,22 @@ DateTime lastCapacityTime;
 char timeChars[5] = {'0', '0', ':', '0', '0'};  // e.g. 00:00
 int lastLoggedMinute = -1;
 int lastLoggedHour = -1;  // Track the last hour we logged
+unsigned long lastRtcUpdateSecs = 0;
 
+// Li-ion (typical)
+const int liionPoints = 11;
+const float liionVoltage[liionPoints]  = {4.20, 4.10, 4.00, 3.90, 3.80, 3.70, 3.60, 3.50, 3.40, 3.30, 3.20};
+const float liionCapacity[liionPoints] = {100,   90,   80,   70,   60,   50,   40,   30,   20,   10,    0};
 
+// LiPo (similar to Li-ion, but slightly different tail)
+const int lipoPoints = 11;
+const float lipoVoltage[lipoPoints]  = {4.20, 4.15, 4.05, 3.95, 3.85, 3.75, 3.65, 3.55, 3.45, 3.35, 3.30};
+const float lipoCapacity[lipoPoints] = {100,   95,   85,   75,   65,   55,   45,   35,   20,   10,    0};
 
-
-//U8G2_SSD1306_128X32_UNIVISION_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);   // Adafruit ESP8266/32u4/ARM Boards + FeatherWing OLED
-//U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-//U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
-U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+// LiFePO₄ (very flat plateau)
+const int lifepo4Points = 9;
+const float lifepo4Voltage[lifepo4Points]  = {3.65, 3.45, 3.40, 3.35, 3.30, 3.25, 3.20, 3.10, 2.90};
+const float lifepo4Capacity[lifepo4Points] = {100,   95,   90,   80,   60,   40,   25,   10,    0};
 
 
 INA226_WE ina226 = INA226_WE(I2C_ADDRESS);
@@ -229,8 +245,8 @@ preferences.begin("esp32meter", false); // Open or create namespace
   pinMode(BUTTON2_PIN, INPUT_PULLUP);
 
   Wire.begin();
-  Wire.setClock(400000UL);
-  u8g2.setBusClock(400000UL);
+  //Wire.setClock(400000UL);
+  //u8g2.setBusClock(400000UL);
 
   ina226.init();
   Serial.println("INIT");  // shows the voltage measured
@@ -283,12 +299,14 @@ preferences.begin("esp32meter", false); // Open or create namespace
 
 
 //RTC INIT
+ 
+ // if (! rtc.begin()) {
+ //   Serial.println("Couldn't find RTC");
+ //   Serial.flush();
+ //   abort();
+ // }
 
-  if (! rtc.begin()) {
-    Serial.println("Couldn't find RTC");
-    Serial.flush();
-    abort();
-  }
+  rtc.begin();
 
   if (rtc.lostPower()) {
     Serial.println("RTC lost power, let's set the time!");
@@ -306,6 +324,13 @@ preferences.begin("esp32meter", false); // Open or create namespace
   // This line sets the RTC with an explicit date & time, for example to set
   // January 21, 2014 at 3am you would call:
   // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
+
+
+DateTime now = rtc.now();
+lastRtcUpdateTime = now;
+lastEnergyTime = now;
+lastLoggedHour = now.hour();
+lastLoggedMinute = now.minute();
 
 
 
@@ -578,11 +603,11 @@ if (wifiEnabled == 1) {
     json += ",\"maxA_min\":" + String(maxA_min, 2);
 
     json += ",\"last60Amps\":[";
-    for (int i = 0; i < 60; i++) {
-      json += String(last60Amps[i], 2);
-      if (i < 59) json += ",";
-    }
-    json += "]";
+for (int i = 0; i < 60; i++) {
+  json += String(last60Amps[i], 2);
+  json += (i < 59) ? "," : "";
+}
+json += "]";
 
     json += ",\"maxWatts\":" + String(maxWatts);
     json += "}";
@@ -629,6 +654,8 @@ for (int i = 0; i < 72; i++) {
       hourlyKWh[i] = 0.000;
   }
 
+
+
 }
 
 
@@ -656,9 +683,28 @@ void disableWiFiServer() {
   //Serial.println("Restarting...");
 }
 
+
+float estimateCapacity(float voltage, const float* volts, const float* caps, int size) {
+  if (voltage >= volts[0]) return 100.0;
+  if (voltage <= volts[size - 1]) return 0.0;
+
+  for (int i = 0; i < size - 1; i++) {
+    if (voltage <= volts[i] && voltage >= volts[i + 1]) {
+      float v1 = volts[i];
+      float v2 = volts[i + 1];
+      float c1 = caps[i];
+      float c2 = caps[i + 1];
+      return c1 + ((voltage - v1) * (c2 - c1) / (v2 - v1)); // linear interpolation
+    }
+  }
+  return 0.0;
+}
+
+
 void sensorread() {
   DateTime now = rtc.now();
-  unsigned long nowSecs = now.unixtime();
+  unsigned long nowSecs = now.unixtime(); // Unix time in seconds
+
 
   ina226.readAndClearFlags();
   voltage = ina226.getBusVoltage_V();
@@ -689,8 +735,9 @@ void sensorread() {
   if (watts > maxWatts) maxWatts = watts;
 
   // Run energy calculations once per second
-  if ((now - lastRtcUpdateTime).totalseconds() >= 1) {
-    float deltaTimeHours = (now - lastRtcUpdateTime).totalseconds() / 3600.0;
+if ((nowSecs - lastRtcUpdateSecs) >= 1) {
+  lastRtcUpdateSecs = nowSecs;
+  float deltaTimeHours = (now - lastRtcUpdateTime).totalseconds() / 3600.0;
     lastRtcUpdateTime = now;
 
     if (abs(mAmpere) <= 4) mAmpere = 0;
@@ -715,12 +762,35 @@ void sensorread() {
       totalWh += watts * deltaTimeHours;
       totalKWh = totalWh / 1000.0;
       totalPrice = totalKWh * pricePerKWh;
+            
+            Serial.print("totalWh:"); //debug
+            Serial.println(totalWh); //debug
+            Serial.print("totalKWh:"); //debug
+            Serial.println(totalKWh); //debug
+            Serial.print("totalUsedmAh:"); //debug
+            Serial.println(totalUsedmAh); //debug
+
     }
 
-    cellvolt = voltage / cellcount;
-    cellvolt = constrain(cellvolt, min_cellvolts, max_cellvolts);
-    capacity = ((cellvolt - min_cellvolts) / (max_cellvolts - min_cellvolts)) * 100.0;
-    capacity = constrain(capacity, 0.0, 100.0);
+cellvolt = voltage / cellcount;
+
+// Lookup capacity from appropriate curve
+switch (batteryType) {
+  case 0: // Li-ion
+    capacity = estimateCapacity(cellvolt, liionVoltage, liionCapacity, liionPoints);
+    break;
+  case 1: // LiPo
+    capacity = estimateCapacity(cellvolt, lipoVoltage, lipoCapacity, lipoPoints);
+    break;
+  case 2: // LiFePO4
+    capacity = estimateCapacity(cellvolt, lifepo4Voltage, lifepo4Capacity, lifepo4Points);
+    break;
+  default:
+    capacity = 0.0;
+    break;
+}
+
+capacity = constrain(capacity, 0.0, 100.0);
 
     if (cur_dir == 1) {
       runtimeHours = (Ampere > 0) ? (remainingCapacityAh / Ampere) : -1;
@@ -756,7 +826,8 @@ void sensorread() {
   }
 
 // Update hourly energy history every full hour (e.g., at 01:00:00, 02:00:00, etc.)
-if (now.minute() == 0 && now.second() == 0 && lastLoggedHour != now.hour()) {
+if (now.minute() == 0 && now.second() <= 1 && lastLoggedHour != now.hour()) {
+
   lastLoggedHour = now.hour();
 
   // Shift older entries left
@@ -767,6 +838,10 @@ if (now.minute() == 0 && now.second() == 0 && lastLoggedHour != now.hour()) {
   // Log new hourly value (convert Wh → kWh)
   hourlyKWh[11] = accumulatedWh / 1000.0;
 
+  Serial.print("HOURMARK:"); //debug
+  Serial.println(accumulatedWh); //debug
+
+
   // Reset energy counter for next hour
   accumulatedWh = 0;
 }
@@ -775,7 +850,8 @@ if (now.minute() == 0 && now.second() == 0 && lastLoggedHour != now.hour()) {
  if (now.minute() % 10 == 0 && now.second() == 0 && lastLoggedMinute != now.minute()) {
   lastLoggedMinute = now.minute();
 
-  
+    Serial.println("10 MIN MARK"); //debug
+
 
  // Shift arrays left
     for (int i = 0; i < 71; i++) {
@@ -785,7 +861,10 @@ if (now.minute() == 0 && now.second() == 0 && lastLoggedHour != now.hour()) {
 
     historyCapacity[71] = capacity;
     historyVoltage[71] = voltage;
+
   }
+
+
 }
 
 
@@ -1787,34 +1866,23 @@ void timescreen() {
   } while (u8g2.nextPage());
 }
 
+unsigned long lastSensorMillis = 0;
+
 
 void loop() {
-
-
-
-
-   
-
-
-
   handleButton(BUTTON1_PIN, button1State, button1PressTime, button1Handled, 1);
   handleButton(BUTTON2_PIN, button2State, button2PressTime, button2Handled, 2);
   
-  sensorread();
+if (millis() - lastSensorMillis >= 1000) {
+    lastSensorMillis = millis();
+    sensorread();  // call once per second
+  }
   buttoncheck();
 
 if (solarmode == 1) {
 
 
-//   save some stats if voltage getting low
-   if (voltage < startupvoltage && !statsSaved) {
-      // Save stats to EEPROM once
-      EEPROM.put(remcap_Address, remainingCapacityAh); // Remaining capacity in Ah
-      EEPROM.put(kwh_Address, totalKWh);               // Total kWh produced
-      EEPROM.commit();  // Needed for some platforms like ESP
-      statsSaved = true;
-      Serial.println("Voltage dropped below startup voltage, stats saved.");
-    }
+
 
 
  if (voltage > startupvoltage) {  //DO USUAL STUFF IF VOLTAGE IS ABOVE startupvoltage
