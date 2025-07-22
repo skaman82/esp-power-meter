@@ -11,7 +11,7 @@ RTC_DS3231 rtc;
 
 
 const char* ssid = "airport";
-const char* password = "babylon5";
+const char* password = "xxx";
 
 const char* AP_PASSWORD = "12345678";
 char AP_SSID[32];

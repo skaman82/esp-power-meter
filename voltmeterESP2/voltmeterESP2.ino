@@ -10,7 +10,7 @@ Preferences preferences;  // Declare this globallychar AP_SSID[32];
 
 
 const char* ssid = "airport";
-const char* password = "babylon5";
+const char* password = "xxx";
 
 const char* AP_PASSWORD = "12345678";
 char AP_SSID[32];
@@ -141,13 +141,10 @@ bool statsSaved = true;
 
 
 // Energy tracking
-unsigned long lastEnergySecondMillis = 0;
-unsigned long hourStartMillis = 0;
 double accumulatedWh = 0.0;
 float hourlyKWh[12] = {0};  // stores last 12 hours kWh values
 float historyCapacity[72];  // 72 × 10min = 720min = 12h
 float historyVoltage[72] = {0};
-unsigned long lastCapacityMinuteMillis = 0;
 int capacityIndex = 0;
 
 float maxA = 0.0;
@@ -646,7 +643,6 @@ else {
 
 
 //ENERGY TRACKING
-  hourStartMillis = millis();
 
 //You can prefill the arrays with 0s
   for (int i = 0; i < 60; i++) {
@@ -805,20 +801,26 @@ void sensorread() {
     minutes = static_cast<int>((runtimeHours - hours) * 60);
   }
 
-  // === Max current in last 60 seconds ===
-  if (millis() - lastEnergySecondMillis >= 1000) {
-    lastEnergySecondMillis = millis();
+// === Max current in last 60 seconds ===
+if (nowSecs != lastEnergySecond) {
+  lastEnergySecond = nowSecs;
 
-    for (int i = 0; i < 59; i++) {
-      last60Amps[i] = last60Amps[i + 1];
-    }
-    last60Amps[59] = Ampere;
+  // Shift the buffer left
+  for (int i = 0; i < 59; i++) {
+    last60Amps[i] = last60Amps[i + 1];
+  }
 
-    maxA_min = 0.0;
-    for (int i = 0; i < 60; i++) {
-      if (last60Amps[i] > maxA_min) maxA_min = last60Amps[i];
+  // Add current value
+  last60Amps[59] = Ampere;
+
+  // Recalculate the 60-second max
+  maxA_min = 0.0;
+  for (int i = 0; i < 60; i++) {
+    if (last60Amps[i] > maxA_min) {
+      maxA_min = last60Amps[i];
     }
   }
+}
 
   // === Accumulate Wh while charging only ===
   if (cur_dir == 2) {
