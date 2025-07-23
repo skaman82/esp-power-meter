@@ -12792,9 +12792,9 @@ Source: AVX .. aphvc.pdf</description>
 <smd name="P13" x="15.08" y="13.97" dx="2.54" dy="1.27" layer="1" roundness="50"/>
 <smd name="P14" x="15.08" y="16.51" dx="2.54" dy="1.27" layer="1" roundness="50"/>
 <smd name="P15" x="15.08" y="19.05" dx="2.54" dy="1.27" layer="1" roundness="50"/>
-<wire x1="15.24" y1="-1.27" x2="-2.54" y2="-1.27" width="0.127" layer="25"/>
-<wire x1="-2.54" y1="-1.27" x2="-2.54" y2="20.32" width="0.127" layer="25"/>
-<wire x1="15.24" y1="-1.27" x2="15.24" y2="20.32" width="0.127" layer="25"/>
+<wire x1="15.24" y1="-2.54" x2="-2.54" y2="-2.54" width="0.127" layer="25"/>
+<wire x1="-2.54" y1="-2.54" x2="-2.54" y2="20.32" width="0.127" layer="25"/>
+<wire x1="15.24" y1="-2.54" x2="15.24" y2="20.32" width="0.127" layer="25"/>
 <wire x1="15.24" y1="20.32" x2="-2.54" y2="20.32" width="0.127" layer="25"/>
 <text x="6.985" y="1.397" size="1.27" layer="25" rot="R90">ESP32 C3 PRO Mini</text>
 <text x="7.747" y="22.098" size="1.27" layer="25" rot="R180">USB</text>
