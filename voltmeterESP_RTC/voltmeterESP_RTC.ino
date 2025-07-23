@@ -1,3 +1,5 @@
+
+
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
@@ -6,8 +8,7 @@
 #include <time.h>
 #include <Preferences.h>  // Include this at the top
 Preferences preferences;  // Declare this globallychar AP_SSID[32];
-#include "RTClib.h"
-RTC_DS3231 rtc;
+
 
 
 const char* ssid = "airport";
@@ -26,12 +27,31 @@ static AsyncWebServer server(80);
 #include <EEPROM.h>
 #include <esp_system.h>
 
+#include "RTClib.h"
+RTC_DS3231 rtc;
+DateTime now;
+long nowSecs = 0;
+long lastEnergySecond = 0;
+long lastHourTimestamp = 0;
+long lastCapacityTimestamp = 0;
+byte oldHour = 255;  // Initialize to impossible hour so first update triggers logging
+byte newHour = 0;
+
 
 //CONFIG START
-#define AP //USES Accespoint Mode instead of joining a preset Network
+//#define AP //USES Accespoint Mode instead of joining a preset Network
+#define ESP //PLEASE UNCOMMENT WHEN USING ESP HARDWARE
 float deviceCurrent = 0.017;           // 17 mA in normal mode
 float deviceCurrentWifi = 0.050;       // 50 mA in WiFi Mode
 float selfconsumption;
+
+
+//U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+//U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
+U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
 
 byte batteryType = 0; //0:LiIon; 1:LiPo; 2:LiFePO4;
 int cellcount = 1;            //define Cellcount of the Li-Ion battery
@@ -40,21 +60,9 @@ float min_cellvolts = 3.00;
 float batteryCapacityAh = 0;  // Full battery capacity in Ah eg 6.6 Ah
 byte orientation = 1;
 byte screen = 0; //default start screen (0-2)
-byte solarmode = 0;  //if in solarmode the system will check for minimum voltage (defined by "startupvoltage")
 byte wifiEnabled = 0;
 
 float startupvoltage = 16.0;
-
-
-
-//U8G2_SSD1306_128X32_UNIVISION_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);   // Adafruit ESP8266/32u4/ARM Boards + FeatherWing OLED
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-//U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
-//U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-
 //CONFIG END
 
 #define BUTTON1_PIN 1
@@ -89,6 +97,7 @@ byte menustep = 0;
 #define I2C_ADDRESS 0x40
 unsigned long lastUpdateTime = millis(); // track last update time
 unsigned long bootTime = millis();
+unsigned long lastSensorMillis = 0;
 
 unsigned long lastUpdateMicros = 0;
 unsigned long previousMicros = 0;
@@ -135,29 +144,21 @@ bool statsSaved = true;
 
 
 // Energy tracking
-unsigned long lastEnergySecondMillis = 0;
-unsigned long hourStartMillis = 0;
-float accumulatedWh = 0;
+double accumulatedWh = 0.0;
 float hourlyKWh[12] = {0};  // stores last 12 hours kWh values
 float historyCapacity[72];  // 72 × 10min = 720min = 12h
 float historyVoltage[72] = {0};
-unsigned long lastCapacityMinuteMillis = 0;
 int capacityIndex = 0;
 
 float maxA = 0.0;
 float maxA_min = 0.0;
 float last60Amps[60];  // Stores last 60 seconds of amp readings (1 per sec)
+
 unsigned long lastAmpSecondMillis = 0;
-
-
-DateTime lastRtcUpdateTime;
-DateTime lastEnergyTime;
-DateTime lastHourTime;
-DateTime lastCapacityTime;
+bool hasLoggedThis10Min = false;
 char timeChars[5] = {'0', '0', ':', '0', '0'};  // e.g. 00:00
-int lastLoggedMinute = -1;
-int lastLoggedHour = -1;  // Track the last hour we logged
-unsigned long lastRtcUpdateSecs = 0;
+
+
 
 // Li-ion (typical)
 const int liionPoints = 11;
@@ -175,30 +176,11 @@ const float lifepo4Voltage[lifepo4Points]  = {3.65, 3.45, 3.40, 3.35, 3.30, 3.25
 const float lifepo4Capacity[lifepo4Points] = {100,   95,   90,   80,   60,   40,   25,   10,    0};
 
 
+
+
 INA226_WE ina226 = INA226_WE(I2C_ADDRESS);
 
-void waitForVoltageReady() {
-  while (true) {
-    voltage = ina226.getBusVoltage_V();
-    mAmpere = ina226.getCurrent_mA();
 
-    float minma = 50;
-
-    Serial.print("SOLARMODE ACTIVE: Minimun voltage: "); 
-    Serial.println(startupvoltage); 
-    if (voltage >= startupvoltage) {
-      statsSaved = false; //enables savig routine when voltage drops again
-      break;  // Exit loop once voltage is stable
-    }
-    //ESCAPE WITH Button1 press if needed
-    else if (digitalRead(BUTTON1_PIN) == LOW) {
-      statsSaved = false; //enables savig routine when voltage drops again
-      break;  // Exit loop once voltage is stable
-    }
-    
-    delay(500);  // Wait and retry
-  }
-}
 
 // Helper to convert __TIME__ (e.g. "14:33:12") to a unique number
 int getCompileTimeSeed() {
@@ -239,7 +221,9 @@ preferences.begin("esp32meter", false); // Open or create namespace
 
   Serial.begin(9600);  // Serielle Verbindung starten, damit die Daten am Seriellen Monitor angezeigt werden.
 
+  #ifdef ESP
   EEPROM.begin(512); // Required for ESP32 (allocate flash space)
+  #endif
 
   pinMode(BUTTON1_PIN, INPUT_PULLUP);
   pinMode(BUTTON2_PIN, INPUT_PULLUP);
@@ -298,40 +282,6 @@ preferences.begin("esp32meter", false); // Open or create namespace
 
 
 
-//RTC INIT
- 
- // if (! rtc.begin()) {
- //   Serial.println("Couldn't find RTC");
- //   Serial.flush();
- //   abort();
- // }
-
-  rtc.begin();
-
-  if (rtc.lostPower()) {
-    Serial.println("RTC lost power, let's set the time!");
-    // When time needs to be set on a new device, or after a power loss, the
-    // following line sets the RTC to the date & time this sketch was compiled
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    // This line sets the RTC with an explicit date & time, for example to set
-    // January 21, 2014 at 3am you would call:
-    // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
-  }
-
-  // When time needs to be re-set on a previously configured device, the
-  // following line sets the RTC to the date & time this sketch was compiled
-  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  // This line sets the RTC with an explicit date & time, for example to set
-  // January 21, 2014 at 3am you would call:
-  // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
-
-
-DateTime now = rtc.now();
-lastRtcUpdateTime = now;
-lastEnergyTime = now;
-lastLoggedHour = now.hour();
-lastLoggedMinute = now.minute();
-
 
 
 
@@ -374,31 +324,29 @@ Serial.println("Getting COFIG:");
 if (isnan(pricePerKWh) || pricePerKWh < 0 || pricePerKWh > 1000) {
   pricePerKWh = 0.000;  // //DEFAULT VALUE
   EEPROM.put(price_Address, pricePerKWh);
+  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
+  #endif
 }
       
  // If value is out of bounds, initialize it
 if (isnan(batteryCapacityAh) || batteryCapacityAh < 0 || batteryCapacityAh > 1000) {
   batteryCapacityAh = 1.0;  // //DEFAULT VALUE
   EEPROM.put(cap_Address, batteryCapacityAh);
+  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
+  #endif
 }
 
- solarmode = EEPROM.read(mode_Address); //SolarMode 0/1
- if (solarmode > 1) {
-        solarmode = 0; //DEFAULT VALUE
-        EEPROM.put(mode_Address, solarmode); //Correct 
-        EEPROM.commit();   // Also required on ESP32 to save changes to flash
-      }
-      if (solarmode == 1) {
-        screen = 1; //SET THE STATRUP SCREEN VIEW
-      }
+ 
 
 wifiEnabled = EEPROM.read(wifi_Address); //WiFimode 0/1
       if (wifiEnabled > 1) {
         wifiEnabled = 0; //DEFAULT VALUE
         EEPROM.put(wifi_Address, wifiEnabled); //Correct 
+        #ifdef ESP
         EEPROM.commit();   // Also required on ESP32 to save changes to flash
+        #endif
       }
 
 screen = EEPROM.read(screen_Address);
@@ -416,8 +364,6 @@ Serial.print("batteryCapacityAh ");
 Serial.println(batteryCapacityAh); 
 Serial.print("pricePerKWh "); 
 Serial.println(pricePerKWh); 
-Serial.print("Solarmode "); 
-Serial.println(solarmode);
 Serial.print("wifiEnabled "); 
 Serial.println(wifiEnabled); 
 Serial.print("orientation "); 
@@ -434,7 +380,9 @@ remainingCapacityAh = EEPROM.get(remcap_Address, remainingCapacityAh);
 if (isnan(remainingCapacityAh) || remainingCapacityAh < 0 || remainingCapacityAh > 1000) {
   remainingCapacityAh = 1.0;  // reasonable default
   EEPROM.put(remcap_Address, remainingCapacityAh);
+  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
+  #endif
 }
 
   remainingCapacitymAh = remainingCapacityAh * 1000.0;
@@ -470,12 +418,40 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
   totalWh = totalKWh * 1000.0;
   totalPrice = totalKWh * pricePerKWh;
 
-  //CHECK FOR WOLTAGE IF SOLAR MODE IS ACTIVE
 
-  if (solarmode == 1) {
-    selfconsumption = deviceCurrentWifi;
-  waitForVoltageReady();  // Wait until voltage >= definedStartVoltage
+//RTC INIT
+ 
+ // if (! rtc.begin()) {
+ //   Serial.println("Couldn't find RTC");
+ //   Serial.flush();
+ //   abort();
+ // }
+
+  rtc.begin();
+
+  if (rtc.lostPower()) {
+    Serial.println("RTC lost power, let's set the time!");
+    // When time needs to be set on a new device, or after a power loss, the
+    // following line sets the RTC to the date & time this sketch was compiled
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    // This line sets the RTC with an explicit date & time, for example to set
+    // January 21, 2014 at 3am you would call:
+    // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
   }
+
+  // When time needs to be re-set on a previously configured device, the
+  // following line sets the RTC to the date & time this sketch was compiled
+  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  // This line sets the RTC with an explicit date & time, for example to set
+  // January 21, 2014 at 3am you would call:
+  // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
+
+
+DateTime now = rtc.now();
+
+
+
+//OLED INIT
 
   u8g2.begin();
   u8g2.setDisplayRotation(U8G2_R1);
@@ -543,13 +519,9 @@ if (wifiEnabled == 1) {
   // Serve static files from LittleFS
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 
-
   // API Endpoints
   server.on("/data", HTTP_GET, [](AsyncWebServerRequest *request) {
-  
     String json = "{";
-    DateTime now = rtc.now();  // get current RTC time
-    long nowSecs = now.unixtime(); // Convert to Unix timestamp (seconds since 1970)
     json += "\"now\":" + String(nowSecs) + ",";   // Include timestamp in response
     json += "\"batteryType\":\"" + String(batteryType) + "\",";
     json += "\"cellcount\":" + String(cellcount) + ",";
@@ -603,11 +575,11 @@ if (wifiEnabled == 1) {
     json += ",\"maxA_min\":" + String(maxA_min, 2);
 
     json += ",\"last60Amps\":[";
-for (int i = 0; i < 60; i++) {
-  json += String(last60Amps[i], 2);
-  json += (i < 59) ? "," : "";
-}
-json += "]";
+    for (int i = 0; i < 60; i++) {
+      json += String(last60Amps[i], 2);
+      if (i < 59) json += ",";
+    }
+    json += "]";
 
     json += ",\"maxWatts\":" + String(maxWatts);
     json += "}";
@@ -641,7 +613,6 @@ else {
 
 
 //ENERGY TRACKING
-  hourStartMillis = millis();
 
 //You can prefill the arrays with 0s
   for (int i = 0; i < 60; i++) {
@@ -653,8 +624,6 @@ for (int i = 0; i < 72; i++) {
   for (int i = 0; i < 12; i++) {
       hourlyKWh[i] = 0.000;
   }
-
-
 
 }
 
@@ -677,12 +646,13 @@ void disableWiFiServer() {
   EEPROM.put(wifi_Address, wifiEnabled);  // total Wh produced
 
   //save wifi state
+  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
+  #endif
 
   delay(500);
   //Serial.println("Restarting...");
 }
-
 
 float estimateCapacity(float voltage, const float* volts, const float* caps, int size) {
   if (voltage >= volts[0]) return 100.0;
@@ -701,20 +671,23 @@ float estimateCapacity(float voltage, const float* volts, const float* caps, int
 }
 
 
+void updateTime() {
+  now = rtc.now();
+  nowSecs = now.unixtime();
+  newHour = now.hour();  // Track current hour for hourly logging
+
+}
+
 void sensorread() {
-  DateTime now = rtc.now();
-  unsigned long nowSecs = now.unixtime(); // Unix time in seconds
-
-
   ina226.readAndClearFlags();
   voltage = ina226.getBusVoltage_V();
   Ampere = ina226.getCurrent_A();
   mAmpere = ina226.getCurrent_mA();
   watts = voltage * Ampere;
 
-  const float deadbandThreshold = 0.01;
+  const float deadbandThreshold = 0.01; // 10 mA
 
-  // Determine direction and normalize
+  // Determine direction and normalize Ampere
   if (Ampere < -deadbandThreshold) {
     cur_dir = 2; // Charging
     Ampere = -Ampere;
@@ -729,16 +702,15 @@ void sensorread() {
   }
 
   float real_Ampere = Ampere + selfconsumption;
-  int real_mAmpere = real_Ampere * 1000.0;
+  int real_mAmpere = (real_Ampere * 1000.0);
 
   if (Ampere > maxA) maxA = Ampere;
   if (watts > maxWatts) maxWatts = watts;
 
-  // Run energy calculations once per second
-if ((nowSecs - lastRtcUpdateSecs) >= 1) {
-  lastRtcUpdateSecs = nowSecs;
-  float deltaTimeHours = (now - lastRtcUpdateTime).totalseconds() / 3600.0;
-    lastRtcUpdateTime = now;
+  unsigned long currentMicros = micros();
+
+  if (currentMicros - previousMicros >= intervalMicros) {
+    previousMicros = currentMicros;
 
     if (abs(mAmpere) <= 4) mAmpere = 0;
 
@@ -753,44 +725,41 @@ if ((nowSecs - lastRtcUpdateSecs) >= 1) {
     }
 
     remainingCapacityAh = constrain(remainingCapacityAh, 0.0, batteryCapacityAh);
-    if (capacity >= 99.9) remainingCapacityAh = batteryCapacityAh;
-    else if (capacity <= 0.5) remainingCapacityAh = 0;
+
+    if (millis() > 5000) {
+      if (capacity >= 99.9) remainingCapacityAh = batteryCapacityAh;
+      else if (capacity <= 0.5) remainingCapacityAh = 0;
+    }
 
     remainingCapacitymAh = remainingCapacityAh * 1000.0;
+
+    float deltaTimeHours = (currentMicros - lastUpdateMicros) / 3600000000.0;
+    lastUpdateMicros = currentMicros;
 
     if (cur_dir == 2) {
       totalWh += watts * deltaTimeHours;
       totalKWh = totalWh / 1000.0;
       totalPrice = totalKWh * pricePerKWh;
-            
-            Serial.print("totalWh:"); //debug
-            Serial.println(totalWh); //debug
-            Serial.print("totalKWh:"); //debug
-            Serial.println(totalKWh); //debug
-            Serial.print("totalUsedmAh:"); //debug
-            Serial.println(totalUsedmAh); //debug
-
     }
 
-cellvolt = voltage / cellcount;
+    cellvolt = voltage / cellcount;
 
-// Lookup capacity from appropriate curve
-switch (batteryType) {
-  case 0: // Li-ion
-    capacity = estimateCapacity(cellvolt, liionVoltage, liionCapacity, liionPoints);
-    break;
-  case 1: // LiPo
-    capacity = estimateCapacity(cellvolt, lipoVoltage, lipoCapacity, lipoPoints);
-    break;
-  case 2: // LiFePO4
-    capacity = estimateCapacity(cellvolt, lifepo4Voltage, lifepo4Capacity, lifepo4Points);
-    break;
-  default:
-    capacity = 0.0;
-    break;
-}
+    switch (batteryType) {
+      case 0:
+        capacity = estimateCapacity(cellvolt, liionVoltage, liionCapacity, liionPoints);
+        break;
+      case 1:
+        capacity = estimateCapacity(cellvolt, lipoVoltage, lipoCapacity, lipoPoints);
+        break;
+      case 2:
+        capacity = estimateCapacity(cellvolt, lifepo4Voltage, lifepo4Capacity, lifepo4Points);
+        break;
+      default:
+        capacity = 0.0;
+        break;
+    }
 
-capacity = constrain(capacity, 0.0, 100.0);
+    capacity = constrain(capacity, 0.0, 100.0);
 
     if (cur_dir == 1) {
       runtimeHours = (Ampere > 0) ? (remainingCapacityAh / Ampere) : -1;
@@ -804,67 +773,69 @@ capacity = constrain(capacity, 0.0, 100.0);
     minutes = static_cast<int>((runtimeHours - hours) * 60);
   }
 
-  // Update amp tracking once per second
-  if ((now - lastEnergyTime).totalseconds() >= 1) {
-    lastEnergyTime = now;
+// === Max current in last 60 seconds ===
+if (nowSecs != lastEnergySecond) {
+  lastEnergySecond = nowSecs;
 
-    for (int i = 0; i < 59; i++) {
-      last60Amps[i] = last60Amps[i + 1];
-    }
-    last60Amps[59] = Ampere;
-
-    maxA_min = 0.0;
-    for (int i = 0; i < 60; i++) {
-      if (last60Amps[i] > maxA_min) {
-        maxA_min = last60Amps[i];
-      }
-    }
-
-    if (cur_dir == 2) {
-      accumulatedWh += watts / 3600.0;
-    }
+  // Shift the buffer left
+  for (int i = 0; i < 59; i++) {
+    last60Amps[i] = last60Amps[i + 1];
   }
 
-// Update hourly energy history every full hour (e.g., at 01:00:00, 02:00:00, etc.)
-if (now.minute() == 0 && now.second() <= 1 && lastLoggedHour != now.hour()) {
+  // Add current value
+  last60Amps[59] = Ampere;
 
-  lastLoggedHour = now.hour();
-
-  // Shift older entries left
-  for (int i = 0; i < 11; i++) {
-    hourlyKWh[i] = hourlyKWh[i + 1];
+  // Recalculate the 60-second max
+  maxA_min = 0.0;
+  for (int i = 0; i < 60; i++) {
+    if (last60Amps[i] > maxA_min) {
+      maxA_min = last60Amps[i];
+    }
   }
-
-  // Log new hourly value (convert Wh → kWh)
-  hourlyKWh[11] = accumulatedWh / 1000.0;
-
-  Serial.print("HOURMARK:"); //debug
-  Serial.println(accumulatedWh); //debug
-
-
-  // Reset energy counter for next hour
-  accumulatedWh = 0;
 }
 
-  // Update 10-minute capacity/voltage history
- if (now.minute() % 10 == 0 && now.second() == 0 && lastLoggedMinute != now.minute()) {
-  lastLoggedMinute = now.minute();
+  // === Accumulate Wh while charging only ===
+  if (cur_dir == 2) {
+    accumulatedWh += watts / 3600.0;  // Convert W to Wh per second
+  }
 
-    Serial.println("10 MIN MARK"); //debug
+  // === RTC Logging ===
+  DateTime now = rtc.now();
 
+  // Log every 10 minutes on the dot
+  if (now.minute() % 10 == 0 && now.second() == 0) {
+  if (!hasLoggedThis10Min) {
+    hasLoggedThis10Min = true;
 
- // Shift arrays left
+    // Shift both arrays
     for (int i = 0; i < 71; i++) {
       historyCapacity[i] = historyCapacity[i + 1];
       historyVoltage[i] = historyVoltage[i + 1];
     }
 
+    // Add latest values
     historyCapacity[71] = capacity;
     historyVoltage[71] = voltage;
-
   }
+} else {
+  hasLoggedThis10Min = false;
+}
 
+  // Log energy hourly 
+ if (newHour != oldHour) {
+  oldHour = newHour;
 
+  if (cur_dir == 2) {  // Only log if charging
+    // Shift left
+    for (int i = 0; i < 11; i++) {
+      hourlyKWh[i] = hourlyKWh[i + 1];
+    }
+
+    // Add the new hour's data
+    hourlyKWh[11] = accumulatedWh / 1000.0;  // Convert Wh → kWh
+    accumulatedWh = 0;
+  }
+}
 }
 
 
@@ -929,7 +900,9 @@ if (menu == 0) {
       //}
 
 
+      #ifdef ESP
       EEPROM.commit();   // Also required on ESP32 to save changes to flash
+      #endif
       esp_restart();
  // Restart to re-enable Wi-Fi/server
     }
@@ -1045,7 +1018,9 @@ else if (menu == 1) {
        EEPROM.put(price_Address, totalPrice);  // total price 
 
 
+       #ifdef ESP
        EEPROM.commit();   // Also required on ESP32 to save changes to flash
+       #endif
         
 
     // RESET ENERGY RECORDS
@@ -1053,7 +1028,7 @@ for (int i = 0; i < 12; i++) {
   hourlyKWh[i] = 0.0;
 }
 for (int i = 0; i < 72; i++) {
-  historyCapacity[i] = 0.0;
+  historyCapacity[i] = 0;
   historyVoltage[i] = 0.0;
 }
 for (int i = 0; i < 60; i++) {
@@ -1065,18 +1040,11 @@ for (int i = 0; i < 60; i++) {
        reset = 1;
     }
 
-    else if ((menustep == 8) && (pressedbt == 1)) { //SOLAR MODE
+    else if ((menustep == 8) && (pressedbt == 1)) { //RTC SET
     
-     // if (solarmode == 0) {
-     // solarmode = 1;
-    //}
-    //else {
-    //  solarmode = 0;
-    //}
       //ENTER TIME SUMMENU
       menu = 4;
       menustep = 0;
-
     }
 
 
@@ -1101,18 +1069,15 @@ for (int i = 0; i < 60; i++) {
        EEPROM.put(cellAddress, cellcount); //cellcount
        EEPROM.put(cap_Address, batteryCapacityAh); //Capacity  > 999.9 Ah
        EEPROM.put(price_Address, pricePerKWh); //Price per kWh > 0,00 ct
-       EEPROM.put(mode_Address, solarmode); //solarmode setting
        EEPROM.write(screen_Address, screen);
        EEPROM.write(orientation_Address, orientation);
        EEPROM.put(remcap_Address, remainingCapacityAh); // remaining cap in Ah
        EEPROM.put(kwh_Address, totalKWh);  // tatal Wh produced
 
+       #ifdef ESP
        EEPROM.commit();   // Also required on ESP32 to save changes to flash
+       #endif
         Serial.println("Settings saved");
-        Serial.print("solarmode ");
-        Serial.println(solarmode);
-        Serial.print("orientation ");
-        Serial.println(orientation);
 
     saved = 0;
     reset = 0;
@@ -1226,7 +1191,7 @@ else if (menu == 4) { // CHAR MOD MENU TIME
     }
   }
 
-  else if (menustep == 5 && pressedbt == 1) { // ✅ Confirm and set RTC
+  else if (menustep == 5 && pressedbt == 1) { // Confirm and set RTC
     int hours = (timeChars[0] - '0') * 10 + (timeChars[1] - '0');
     int minutes = (timeChars[3] - '0') * 10 + (timeChars[4] - '0');
 
@@ -1243,8 +1208,6 @@ else if (menu == 4) { // CHAR MOD MENU TIME
     menustep = 0;
   }
 }
-
-
 
  if (pressedbt != 0) {
     Serial.print("Pressed button value: ");
@@ -1597,8 +1560,6 @@ void menuscreen() {
    u8g2.firstPage();
   do {
 
-    DateTime now = rtc.now();  // get current RTC time
-
     u8g2.setFont(u8g2_font_7x13B_tr);
     u8g2.setFontMode(0);
     u8g2.setDrawColor(2);
@@ -1815,6 +1776,7 @@ void pricescreen() {
 }
 
 
+
 void timescreen() {
   // Populate timeChars[] with current time if this is the first call
   static bool initialized = false;
@@ -1866,63 +1828,20 @@ void timescreen() {
   } while (u8g2.nextPage());
 }
 
-unsigned long lastSensorMillis = 0;
-
 
 void loop() {
   handleButton(BUTTON1_PIN, button1State, button1PressTime, button1Handled, 1);
   handleButton(BUTTON2_PIN, button2State, button2PressTime, button2Handled, 2);
-  
-if (millis() - lastSensorMillis >= 1000) {
-    lastSensorMillis = millis();
-    sensorread();  // call once per second
+
+//GET TIME
+  if (millis() - lastSensorMillis >= 1000) {
+  lastSensorMillis = millis();
+  updateTime();    // Update RTC time every second
+  sensorread();    // Also call your sensor reading logic
   }
   buttoncheck();
 
-if (solarmode == 1) {
 
-
-
-
-
- if (voltage > startupvoltage) {  //DO USUAL STUFF IF VOLTAGE IS ABOVE startupvoltage
-  if (menu == 0) {
-  draw();
-  }
-  else if (menu == 1) {
-  menuscreen();
-  }
-  else if (menu == 2) {
-  capscreen();
-  }
-   else if (menu == 3) {
-  pricescreen();
-  }
-    else if (menu == 4) {
-  timescreen();
-  }
- }
- else { // CLEAR SCREEN if voltage drops startupvoltage
-  if (menu == 0) {
-  // clear screen
-    u8g2.clear();
-  }
-  else if (menu == 1) {
-  menuscreen();
-  }
-  else if (menu == 2) {
-  capscreen();
-  }
-   else if (menu == 3) {
-  pricescreen();
-  }
-   else if (menu == 4) {
-  timescreen();
-  }
- }
-
-}
-else if (solarmode == 0) { //DO USUAL STUFF
   if (menu == 0) {
   draw();
   }
@@ -1938,7 +1857,7 @@ else if (solarmode == 0) { //DO USUAL STUFF
    else if (menu == 4) {
   timescreen();
   }
-}
+
 
 
 

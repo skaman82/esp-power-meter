@@ -14,7 +14,6 @@ let ampsChart = null;
 let slideIndex = 0; // or whatever the default is
 
 
-
 const simulatedData = {
   now: Math.floor(Date.now() / 1000),
   batteryType: 0,
@@ -29,7 +28,7 @@ const simulatedData = {
   totalWh: 123.5,
   totalKWh: 0.235,
   capacity: 0,
-  screen: 0, 
+  screen: 1, 
   hourlyKWh: [
     0.00, 0.02, 0.06, 0.10, 0.14, 0.17, 
     0.175, 0.17, 0.14, 0.10, 0.05, 0.01
@@ -95,7 +94,7 @@ slider.addEventListener('transitionend', (e) => {
 function setSlide(index, fromUser = false) {
   activeSlide = Math.max(0, Math.min(index, 2));
   slideIndex = activeSlide; // ✅ Set global slideIndex here
- // console.log("slideIndex:", slideIndex);
+  console.log("slideIndex:", slideIndex);
 
   isAnimating = true;
 
@@ -133,6 +132,7 @@ function setSlide(index, fromUser = false) {
 
 
 // === Fetch Data from ESP ===
+
 function fetchData() {
   if (simulated) {
     applyData(simulatedData);
@@ -152,8 +152,6 @@ function fetchData() {
     .then(data => {
       applyData(data);
 
-      
-
       // Update slide based on screen value if not overridden by user
       if (!userOverridden && typeof data.screen === "number") {
         setSlide(data.screen, false); // false disables user animation + avoids lock
@@ -168,6 +166,7 @@ function fetchData() {
     })
     .catch(error => console.error("Fetch failed:", error));
 }
+
 
 
 
@@ -345,20 +344,18 @@ function applyData(data) {
   }
 
 
-  if (typeof data.now === "number") {
-    const rtcDate = new Date(data.now * 1000); // Convert Unix timestamp to JS Date in UTC
+if (typeof data.now === "number") {
+  const rtcDate = new Date(data.now * 1000); // Convert Unix timestamp to JS Date in UTC
+
+  // Format as HH:MM:SS without timezone shift
+  const hh = String(rtcDate.getUTCHours()).padStart(2, '0');
+  const mm = String(rtcDate.getUTCMinutes()).padStart(2, '0');
+  const ss = String(rtcDate.getUTCSeconds()).padStart(2, '0');
   
-    // Format as HH:MM:SS without timezone shift
-    const hh = String(rtcDate.getUTCHours()).padStart(2, '0');
-    const mm = String(rtcDate.getUTCMinutes()).padStart(2, '0');
-    const ss = String(rtcDate.getUTCSeconds()).padStart(2, '0');
-    
-    const timeStr = `${hh}:${mm}:${ss}`;
-    document.getElementById("rtc-time").textContent = timeStr;
-  }
+  const timeStr = `${hh}:${mm}:${ss}`;
+  document.getElementById("rtc-time").textContent = timeStr;
 }
-
-
+}
 
 function updateSliderHeight() {
   const sliderContainer = document.querySelector('.slider-container');
@@ -368,7 +365,6 @@ function updateSliderHeight() {
     sliderContainer.style.height = newHeight + 'px';
   }
 }
-
 
 
 
@@ -636,12 +632,15 @@ function destroyInactiveCharts(active) {
 }
 
 
+
+
+
 // Utility: Generate time labels for line/bar charts (UTC)
 function generateTimeLabels(nowSecs, points, intervalSec, roundToNearest = false) {
   let baseDate = new Date(nowSecs * 1000);
 
   //console.log("nowSecs (Unix seconds):", nowSecs);
-  console.log("Rounded base time (UTC):", roundToNearest10MinUTC(new Date(nowSecs * 1000)));
+  //console.log("Rounded base time (UTC):", roundToNearest10MinUTC(new Date(nowSecs * 1000)));
 
   if (roundToNearest) {
     baseDate = roundToNearest10MinUTC(baseDate);
@@ -665,6 +664,11 @@ function roundToNearest10MinUTC(date) {
   date.setUTCMinutes(minutes - (minutes % 10));
   return date;
 }
+
+
+
+
+
 
 
 
@@ -817,6 +821,8 @@ function renderCapacityChart(data, nowSecs) {
   });
 }
 
+
+
 // kWh Chart
 function renderKWhBarChart(data, nowSecs) {
   const ctx = document.getElementById('myChart').getContext('2d');
@@ -887,6 +893,7 @@ function renderKWhBarChart(data, nowSecs) {
     }
   });
 }
+
 
 
 
