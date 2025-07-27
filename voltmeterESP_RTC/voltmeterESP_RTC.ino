@@ -1,5 +1,3 @@
-
-
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
@@ -8,65 +6,60 @@
 #include <time.h>
 #include <Preferences.h>  // Include this at the top
 Preferences preferences;  // Declare this globallychar AP_SSID[32];
-
-
-
-const char* ssid = "airport";
-const char* password = "xxx";
-
-const char* AP_PASSWORD = "12345678";
-char AP_SSID[32];
-// Create server on port 80
-static AsyncWebServer server(80);
-
-
 #include <INA226_WE.h>
 #include <Arduino.h>
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <EEPROM.h>
 #include <esp_system.h>
-
 #include "RTClib.h"
+
+//CONFIG START
+float deviceCurrent = 0.013;           // 13 mA in normal mode
+float deviceCurrentWifi = 0.036;       // 36 mA in WiFi Mode
+byte batteryType = 0; //0:LiIon; 1:LiPo; 2:LiFePO4;
+int cellcount = 1;            //define Cellcount of the Li-Ion battery
+float batteryCapacityAh = 0;  // Full battery capacity in Ah eg 6.6 Ah
+byte orientation = 1;
+byte screen = 0; //default start screen (0-2)
+byte wifiEnabled = 0;
+
+//OLED SELECTION
+//U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+//U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
+U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+const char* ssid = "airport";
+const char* password = "xxx";
+const char* AP_PASSWORD = "12345678";
+//#define AP //USES Accespoint Mode instead of joining a preset Network
+
+//CONFIG END
+
+
+
+
+
+char AP_SSID[32];
+// Create server on port 80
+static AsyncWebServer server(80);
+
+
+#define BUTTON1_PIN 1
+#define BUTTON2_PIN 2
+
 RTC_DS3231 rtc;
 DateTime now;
+
+float selfconsumption;
+
 long nowSecs = 0;
 long lastEnergySecond = 0;
 long lastHourTimestamp = 0;
 long lastCapacityTimestamp = 0;
 byte oldHour = 255;  // Initialize to impossible hour so first update triggers logging
 byte newHour = 0;
-
-
-//CONFIG START
-//#define AP //USES Accespoint Mode instead of joining a preset Network
-#define ESP //PLEASE UNCOMMENT WHEN USING ESP HARDWARE
-float deviceCurrent = 0.017;           // 17 mA in normal mode
-float deviceCurrentWifi = 0.050;       // 50 mA in WiFi Mode
-float selfconsumption;
-
-
-//U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-//U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
-U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-
-byte batteryType = 0; //0:LiIon; 1:LiPo; 2:LiFePO4;
-int cellcount = 1;            //define Cellcount of the Li-Ion battery
-float max_cellvolts = 4.20;
-float min_cellvolts = 3.00;
-float batteryCapacityAh = 0;  // Full battery capacity in Ah eg 6.6 Ah
-byte orientation = 1;
-byte screen = 0; //default start screen (0-2)
-byte wifiEnabled = 0;
-
-float startupvoltage = 16.0;
-//CONFIG END
-
-#define BUTTON1_PIN 1
-#define BUTTON2_PIN 2
 
 float remainingCapacityAh = 0;
 int remainingCapacitymAh = 0;
@@ -159,7 +152,6 @@ bool hasLoggedThis10Min = false;
 char timeChars[5] = {'0', '0', ':', '0', '0'};  // e.g. 00:00
 
 
-
 // Li-ion (typical)
 const int liionPoints = 11;
 const float liionVoltage[liionPoints]  = {4.20, 4.10, 4.00, 3.90, 3.80, 3.70, 3.60, 3.50, 3.40, 3.30, 3.20};
@@ -176,10 +168,7 @@ const float lifepo4Voltage[lifepo4Points]  = {3.65, 3.45, 3.40, 3.35, 3.30, 3.25
 const float lifepo4Capacity[lifepo4Points] = {100,   95,   90,   80,   60,   40,   25,   10,    0};
 
 
-
-
 INA226_WE ina226 = INA226_WE(I2C_ADDRESS);
-
 
 
 // Helper to convert __TIME__ (e.g. "14:33:12") to a unique number
@@ -221,9 +210,7 @@ preferences.begin("esp32meter", false); // Open or create namespace
 
   Serial.begin(9600);  // Serielle Verbindung starten, damit die Daten am Seriellen Monitor angezeigt werden.
 
-  #ifdef ESP
   EEPROM.begin(512); // Required for ESP32 (allocate flash space)
-  #endif
 
   pinMode(BUTTON1_PIN, INPUT_PULLUP);
   pinMode(BUTTON2_PIN, INPUT_PULLUP);
@@ -283,8 +270,6 @@ preferences.begin("esp32meter", false); // Open or create namespace
 
 
 
-
-
 // READ FROM EEPROM
 
 //SETTINGS
@@ -297,23 +282,9 @@ Serial.println("Getting COFIG:");
         batteryType = 0;
       }
       
-  //UPDATE BATTERY LIMITS
-  if (batteryType == 0) { //LiIon
-      max_cellvolts = 4.20;
-      min_cellvolts = 3.00;
-  }
-  else if (batteryType == 1) { //LiPo
-      max_cellvolts = 4.20;
-      min_cellvolts = 3.30;
-  }
-  else if (batteryType == 2) { //LiFePO4
-      max_cellvolts = 3.65;
-      min_cellvolts = 2.50;
-  }
+  
 
        cellcount = EEPROM.read(cellAddress); //cellcount
-       //max_cellvolts = EEPROM.read(max_cellAddress);
-       //min_cellvolts = EEPROM.read(min_cellAddress);
        batteryCapacityAh = EEPROM.get(cap_Address, batteryCapacityAh); //Capacity  > 999.9 Ah
        pricePerKWh = EEPROM.get(price_Address, pricePerKWh); //Price per kWh > 0,00 ct
 
@@ -324,18 +295,14 @@ Serial.println("Getting COFIG:");
 if (isnan(pricePerKWh) || pricePerKWh < 0 || pricePerKWh > 1000) {
   pricePerKWh = 0.000;  // //DEFAULT VALUE
   EEPROM.put(price_Address, pricePerKWh);
-  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
-  #endif
 }
       
  // If value is out of bounds, initialize it
 if (isnan(batteryCapacityAh) || batteryCapacityAh < 0 || batteryCapacityAh > 1000) {
   batteryCapacityAh = 1.0;  // //DEFAULT VALUE
   EEPROM.put(cap_Address, batteryCapacityAh);
-  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
-  #endif
 }
 
  
@@ -344,9 +311,7 @@ wifiEnabled = EEPROM.read(wifi_Address); //WiFimode 0/1
       if (wifiEnabled > 1) {
         wifiEnabled = 0; //DEFAULT VALUE
         EEPROM.put(wifi_Address, wifiEnabled); //Correct 
-        #ifdef ESP
         EEPROM.commit();   // Also required on ESP32 to save changes to flash
-        #endif
       }
 
 screen = EEPROM.read(screen_Address);
@@ -380,9 +345,7 @@ remainingCapacityAh = EEPROM.get(remcap_Address, remainingCapacityAh);
 if (isnan(remainingCapacityAh) || remainingCapacityAh < 0 || remainingCapacityAh > 1000) {
   remainingCapacityAh = 1.0;  // reasonable default
   EEPROM.put(remcap_Address, remainingCapacityAh);
-  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
-  #endif
 }
 
   remainingCapacitymAh = remainingCapacityAh * 1000.0;
@@ -644,11 +607,8 @@ void disableWiFiServer() {
   WiFi.mode(WIFI_OFF);
   wifiEnabled = 0;
   EEPROM.put(wifi_Address, wifiEnabled);  // total Wh produced
-
   //save wifi state
-  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
-  #endif
 
   delay(500);
   //Serial.println("Restarting...");
@@ -825,19 +785,17 @@ if (nowSecs != lastEnergySecond) {
  if (newHour != oldHour) {
   oldHour = newHour;
 
-  if (cur_dir == 2) {  // Only log if charging
-    // Shift left
-    for (int i = 0; i < 11; i++) {
-      hourlyKWh[i] = hourlyKWh[i + 1];
-    }
-
-    // Add the new hour's data
-    hourlyKWh[11] = accumulatedWh / 1000.0;  // Convert Wh → kWh
-    accumulatedWh = 0;
+  // Shift left
+  for (int i = 0; i < 11; i++) {
+    hourlyKWh[i] = hourlyKWh[i + 1];
   }
-}
-}
 
+  // Log the accumulated charging energy for the past hour
+  hourlyKWh[11] = accumulatedWh / 1000.0;  // Convert Wh → kWh
+  accumulatedWh = 0;  // Reset for next hour
+  }
+  
+}
 
 
 
@@ -899,10 +857,7 @@ if (menu == 0) {
       //  EEPROM.put(kwhHistory_Address + i * sizeof(float), hourlyKWh[i]);
       //}
 
-
-      #ifdef ESP
       EEPROM.commit();   // Also required on ESP32 to save changes to flash
-      #endif
       esp_restart();
  // Restart to re-enable Wi-Fi/server
     }
@@ -1016,11 +971,7 @@ else if (menu == 1) {
        //EEPROM.put(remcap_Address, remainingCapacityAh); // remaining cap in Ah
        EEPROM.put(kwh_Address, totalKWh);  // total Wh produced
        EEPROM.put(price_Address, totalPrice);  // total price 
-
-
-       #ifdef ESP
        EEPROM.commit();   // Also required on ESP32 to save changes to flash
-       #endif
         
 
     // RESET ENERGY RECORDS
@@ -1050,19 +1001,7 @@ for (int i = 0; i < 60; i++) {
 
     else if ((menustep == 9) && (pressedbt == 1)) { //EXIT MENU SCREEN
 
-      //UPDATE BATTERY LIMITS
-  if (batteryType == 0) { //LiIon
-      max_cellvolts = 4.20;
-      min_cellvolts = 3.00;
-  }
-  else if (batteryType == 1) { //LiPo
-      max_cellvolts = 4.20;
-      min_cellvolts = 3.30;
-  }
-  else if (batteryType == 2) { //LiFePO4
-      max_cellvolts = 3.65;
-      min_cellvolts = 2.50;
-  }
+     
 
 //SAVE TO EPROM
        EEPROM.put(typeAddress, batteryType); //batteryType
@@ -1073,11 +1012,9 @@ for (int i = 0; i < 60; i++) {
        EEPROM.write(orientation_Address, orientation);
        EEPROM.put(remcap_Address, remainingCapacityAh); // remaining cap in Ah
        EEPROM.put(kwh_Address, totalKWh);  // tatal Wh produced
-
-       #ifdef ESP
        EEPROM.commit();   // Also required on ESP32 to save changes to flash
-       #endif
-        Serial.println("Settings saved");
+      
+       Serial.println("Settings saved");
 
     saved = 0;
     reset = 0;
