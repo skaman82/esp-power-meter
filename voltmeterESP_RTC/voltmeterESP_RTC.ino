@@ -1,3 +1,6 @@
+// HARDWARE DFROBOT Beetle ESP32-C3 ()
+// Running at 40MHz
+
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
@@ -8,43 +11,68 @@
 Preferences preferences;  // Declare this globallychar AP_SSID[32];
 #include <INA226_WE.h>
 #include <Arduino.h>
-#include <U8g2lib.h>
 #include <Wire.h>
 #include <EEPROM.h>
 #include <esp_system.h>
 #include "RTClib.h"
 
-//CONFIG START
-float deviceCurrent = 0.013;           // 13 mA in normal mode
-float deviceCurrentWifi = 0.036;       // 36 mA in WiFi Mode
-byte batteryType = 0; //0:LiIon; 1:LiPo; 2:LiFePO4;
-int cellcount = 1;            //define Cellcount of the Li-Ion battery
-float batteryCapacityAh = 0;  // Full battery capacity in Ah eg 6.6 Ah
-byte orientation = 1;
-byte screen = 0; //default start screen (0-2)
-byte wifiEnabled = 0;
 
-//OLED SELECTION
+
+//CONFIG START >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+#define AP      // USES Accespoint Mode instead of joining a preset Network.
+//#define OLED    // OLED Display 
+//#define MQTT    // USE AS SENSOR IN Home Assistant - doesn't work in AP Mode
+
+
+//Device Settings START (no need to configure this if using an OLED screen and buttons)
+float deviceCurrent = 0.013;      // 13 mA in normal mode //
+float deviceCurrentWifi = 0.036;  // 36 mA in WiFi Mode //34 no OLED @160mhz - 31ma @ 80mhz
+byte batteryType = 0;             // 0:LiIon; 1:LiPo; 2:LiFePO4;
+int cellcount = 4;                // define Cellcount of the Li-Ion battery
+float batteryCapacityAh = 50.00;  // Full battery capacity in Ah eg 6.6 Ah
+byte orientation = 1;             // Screen orientation
+byte screen = 0;                  // default start screen (0-2)
+byte wifiEnabled = 1;             // WiFi active or not
+float pricePerKWh = 0.305;        // 30.5 cents per kWh
+
+//Device Settings END
+
+#ifdef OLED
+#include <U8g2lib.h>
+//OLED TYPE SELECTION (Uncomment the right one for you)
 //U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 //U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 //U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
 U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+#endif
 
 const char* ssid = "airport";
-const char* password = "xxx";
-const char* AP_PASSWORD = "12345678";
-//#define AP //USES Accespoint Mode instead of joining a preset Network
+const char* password = "babylon5";
+const char* AP_PASSWORD = "12345678"; //Password for AP mode
 
-//CONFIG END
+#ifdef AP
+#undef MQTT
+#endif
 
+#ifdef MQTT
+#include <PubSubClient.h>
+const char* mqtt_server = "homeassistant.local";  // or IP of HA
+const int mqtt_port = 1883;
+const char* mqtt_user = "mqtt_user";
+const char* mqtt_pass = "mqtt_password";
 
+WiFiClient espClient;
+PubSubClient client(espClient);
+#endif
+
+//CONFIG END >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 
 
 char AP_SSID[32];
 // Create server on port 80
 static AsyncWebServer server(80);
-
 
 #define BUTTON1_PIN 1
 #define BUTTON2_PIN 2
@@ -80,7 +108,6 @@ int hours = 0;
 int minutes = 0;
 float totalWh = 0;
 float totalKWh = 0.0;
-float pricePerKWh = 0.00; // 15 cents per kWh
 float totalPrice = 0;
 
 byte menu = 0;
@@ -222,7 +249,6 @@ preferences.begin("esp32meter", false); // Open or create namespace
   ina226.init();
   Serial.println("INIT");  // shows the voltage measured
 
-
   /* Set Number of measurements for shunt and bus voltage which shall be averaged
   * Mode *     * Number of samples *
   AVERAGE_1            1 (default)
@@ -267,9 +293,7 @@ preferences.begin("esp32meter", false); // Open or create namespace
   //ina226.setResistorRange(0.000515,40.0); // 0.0005 > 05m
   ina226.waitUntilConversionCompleted();  //if you comment this line the first data might be zero
 
-
-
-
+#ifdef OLED
 // READ FROM EEPROM
 
 //SETTINGS
@@ -282,8 +306,6 @@ Serial.println("Getting COFIG:");
         batteryType = 0;
       }
       
-  
-
        cellcount = EEPROM.read(cellAddress); //cellcount
        batteryCapacityAh = EEPROM.get(cap_Address, batteryCapacityAh); //Capacity  > 999.9 Ah
        pricePerKWh = EEPROM.get(price_Address, pricePerKWh); //Price per kWh > 0,00 ct
@@ -319,8 +341,6 @@ if (screen > 2){ screen = 0; }
 orientation = EEPROM.read(orientation_Address);
 if (orientation > 3){ orientation = 0; }
 
-
-
 Serial.print("batteryType "); 
 Serial.println(batteryType); 
 Serial.print("cellcount "); 
@@ -349,7 +369,6 @@ if (isnan(remainingCapacityAh) || remainingCapacityAh < 0 || remainingCapacityAh
 }
 
   remainingCapacitymAh = remainingCapacityAh * 1000.0;
-
   totalKWh = EEPROM.get(kwh_Address, totalKWh);
 
   // Reset if invalid (e.g., negative, NaN, or absurdly high)
@@ -359,12 +378,6 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
   EEPROM.put(kwh_Address, totalKWh);
   EEPROM.commit();
 }
-
-
-
-  //get ENERGY STATS
-
-
 
   Serial.println("Getting STATS:"); 
   Serial.print("remainingCapacityAh ");
@@ -381,6 +394,7 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
   totalWh = totalKWh * 1000.0;
   totalPrice = totalKWh * pricePerKWh;
 
+#endif
 
 //RTC INIT
  
@@ -413,7 +427,7 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
 DateTime now = rtc.now();
 
 
-
+#ifdef OLED
 //OLED INIT
 
   u8g2.begin();
@@ -436,7 +450,7 @@ DateTime now = rtc.now();
       u8g2.setDisplayRotation(U8G2_R0);
       u8g2.clear();
     } 
-
+#endif
 
 
 ///SERVER INIT
@@ -477,6 +491,12 @@ if (wifiEnabled == 1) {
     Serial.println("\nFailed to connect to WiFi.");
     return;
   }
+
+  #ifdef MQTT
+  // MQTT
+  client.setServer(mqtt_server, mqtt_port);
+  #endif
+
 #endif
 
   // Serve static files from LittleFS
@@ -797,6 +817,55 @@ if (nowSecs != lastEnergySecond) {
   
 }
 
+#ifdef MQTT
+
+unsigned long lastMqttAttempt = 0;
+const unsigned long mqttRetryInterval = 5000;  // 5 seconds
+
+void checkMQTTConnection() {
+  if (!client.connected()) {
+    unsigned long now = millis();
+    if (now - lastMqttAttempt > mqttRetryInterval) {
+      lastMqttAttempt = now;
+      Serial.println("Attempting MQTT connection...");
+
+      if (client.connect("PowerMeter", mqtt_user, mqtt_pass)) {
+        Serial.println("MQTT connected");
+        // client.subscribe("your/topic");  // If needed
+      } else {
+        Serial.print("MQTT failed, rc=");
+        Serial.print(client.state());
+        Serial.println(" retrying in 5 seconds");
+      }
+    }
+  } else {
+    client.loop();  // Keep MQTT connection alive
+  }
+}
+
+void publishToMQTT() {
+  if (!client.connected()) {
+   client.connect("PowerMeter", mqtt_user, mqtt_pass);
+  }
+
+  client.loop(); // process incoming messages
+
+  // Prepare metrics
+  float soc = capacity; // in %
+  float charging_watts = (cur_dir == 2) ? watts : 0;
+  float discharging_watts = (cur_dir == 1) ? watts : 0;
+  float battery_voltage = voltage;                // Bus voltage (V)
+  float battery_current = (cur_dir == 1) ? -Ampere : Ampere; // Negative if discharging
+
+
+  // Publish
+  client.publish("power_meter/state_of_charge", String(soc, 1).c_str(), true);
+  client.publish("power_meter/charge_power", String(charging_watts, 1).c_str(), true);
+  client.publish("power_meter/discharge_power", String(discharging_watts, 1).c_str(), true);
+  client.publish("power_meter/voltage", String(battery_voltage, 2).c_str(), true);
+  client.publish("power_meter/current", String(battery_current, 3).c_str(), true);
+}
+#endif
 
 
 void handleButton(int pin, bool &state, unsigned long &pressTime, bool &handled, int buttonValue) {
@@ -829,16 +898,15 @@ bool isPressed = digitalRead(pin) == LOW;
 
 
 
+#ifdef OLED
 
 void buttoncheck() {
 
 
 if (menu == 0) {
-
   if (pressedbt == 22) {
     menu = 1; //ENTER MENU SCREEN
     }
-
     if (pressedbt == 11) { //TURN ON/OFF WIFI
     //wifiEnabled = !wifiEnabled;
     if (wifiEnabled == 1) {
@@ -862,9 +930,7 @@ if (menu == 0) {
  // Restart to re-enable Wi-Fi/server
     }
   }
-
   if (pressedbt == 2) {
-
         if (screen == 0) {
         u8g2.clear();
         screen = 1;
@@ -875,7 +941,6 @@ if (menu == 0) {
         u8g2.clear();
         screen = 0;
       }
-
 
   } else if (pressedbt == 1) { // CHANGE SCREEN ORIENTATION
 
@@ -903,8 +968,8 @@ if (menu == 0) {
       u8g2.clear();
     } 
   }
-}
 
+}
 else if (menu == 1) {
 
    if (pressedbt == 2) { //NAVIGATE MENU 
@@ -1000,8 +1065,6 @@ for (int i = 0; i < 60; i++) {
 
 
     else if ((menustep == 9) && (pressedbt == 1)) { //EXIT MENU SCREEN
-
-     
 
 //SAVE TO EPROM
        EEPROM.put(typeAddress, batteryType); //batteryType
@@ -1145,7 +1208,6 @@ else if (menu == 4) { // CHAR MOD MENU TIME
     menustep = 0;
   }
 }
-
  if (pressedbt != 0) {
     Serial.print("Pressed button value: ");
     Serial.println(pressedbt);
@@ -1157,19 +1219,11 @@ else if (menu == 4) { // CHAR MOD MENU TIME
   //Serial.println(menustep);
   //Serial.print("menu: ");
   //Serial.println(menu);
-
-
 }
 
 void draw() {
   u8g2.firstPage();
   do {
-   
-
-
-  
-
-
     if (screen == 0) {
       //pagination
       u8g2.drawBox(92, 4, 5, 5);
@@ -1182,7 +1236,6 @@ void draw() {
       u8g2.drawFrame(120, 6, 4, 1);
       u8g2.drawFrame(121, 8, 2, 1);
       }
-
 
       u8g2.setFont(u8g2_font_6x10_tr);
       u8g2.setCursor(0, 10);
@@ -1225,17 +1278,13 @@ void draw() {
       u8g2.println(" %");
 
 
-
 // Batery ICON 
       u8g2.drawFrame(89,21,6,2);
       u8g2.drawFrame(114,21,6,2);
       u8g2.drawFrame(85,24,39,30);
 
-    
-
       u8g2.setFontMode(0); 
       u8g2.setDrawColor(2);
-
 
 
       //CAPACITY BAR
@@ -1268,7 +1317,6 @@ void draw() {
        u8g2.print("IDLE");
         runtimeHours = 0;  //reset counter while in idle mode
       }
-
 
      
       u8g2.setCursor(0, 72);
@@ -1365,7 +1413,6 @@ void draw() {
       u8g2.setFont(u8g2_font_6x10_tr);
       u8g2.println("PEAK W");
 
-
       //2nd row
       u8g2.setFont(u8g2_font_fub20_tr);
       u8g2.setCursor(0, 72);
@@ -1404,7 +1451,6 @@ void draw() {
     //  u8g2.setFont(u8g2_font_fub11_tr);
       u8g2.println(" Wh ");
     }
-
       
     }
 
@@ -1450,7 +1496,6 @@ void draw() {
         u8g2.print(mAmpere);
         u8g2.setFont(u8g2_font_fub11_tr);
         u8g2.println(" mA");
-
       }
 
       
@@ -1482,10 +1527,6 @@ void draw() {
       u8g2.print("PEAK ");
       u8g2.print(maxA, 2);
       u8g2.print(" A");
-
-
-    
-      
     }
 
   } while (u8g2.nextPage());
@@ -1577,7 +1618,6 @@ else {
     }
     u8g2.print(now.minute(), DEC);
  
-    
     u8g2.setCursor(5, 77);
     u8g2.println("Save & Exit");
 
@@ -1597,7 +1637,6 @@ else {
 
     #endif
 }
-
 
 
   //u8g2.drawStr(0, 30, AP_SSID);
@@ -1634,9 +1673,6 @@ else {
          else if ((submenu == 0) && (menustep == 9)) {
     u8g2.drawBox(0,63,128,20);
     }
-    
-
-
 
     } while (u8g2.nextPage());
 }
@@ -1652,8 +1688,6 @@ void capscreen() {
     u8g2.setFont(u8g2_font_7x13B_tr);
     u8g2.setCursor(5, 10);
     u8g2.print("Capacity in Ah");
-
-
 
     for (int i = 0; i < 6; i++) {
     int x = 10 + i * 12;
@@ -1764,21 +1798,28 @@ void timescreen() {
 
   } while (u8g2.nextPage());
 }
-
+#endif
 
 void loop() {
   handleButton(BUTTON1_PIN, button1State, button1PressTime, button1Handled, 1);
   handleButton(BUTTON2_PIN, button2State, button2PressTime, button2Handled, 2);
+
 
 //GET TIME
   if (millis() - lastSensorMillis >= 1000) {
   lastSensorMillis = millis();
   updateTime();    // Update RTC time every second
   sensorread();    // Also call your sensor reading logic
+  #ifdef MQTT
+  checkMQTTConnection();
+  publishToMQTT();
+  #endif
   }
+  #ifdef OLED
   buttoncheck();
+  #endif
 
-
+  #ifdef OLED
   if (menu == 0) {
   draw();
   }
@@ -1794,12 +1835,7 @@ void loop() {
    else if (menu == 4) {
   timescreen();
   }
-
-
-
-
-
-
+  #endif
 }
 
 

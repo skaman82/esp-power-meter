@@ -1017,4 +1017,3 @@ gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');     // Bottom
   }
 }
 
-

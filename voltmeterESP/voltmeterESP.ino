@@ -6,47 +6,73 @@
 #include <time.h>
 #include <Preferences.h>  // Include this at the top
 Preferences preferences;  // Declare this globallychar AP_SSID[32];
-
-
-const char* ssid = "airport";
-const char* password = "xxx";
-
-const char* AP_PASSWORD = "12345678";
-char AP_SSID[32];
-// Create server on port 80
-static AsyncWebServer server(80);
-
-
 #include <INA226_WE.h>
 #include <Arduino.h>
-#include <U8g2lib.h>
 #include <Wire.h>
 #include <EEPROM.h>
 #include <esp_system.h>
 
 
-//CONFIG START
-#define AP //USES Accespoint Mode instead of joining a preset Network
-#define ESP //PLEASE UNCOMMENT WHEN USING ESP HARDWARE
-float deviceCurrent = 0.017;           // 17 mA in normal mode
-float deviceCurrentWifi = 0.050;       // 50 mA in WiFi Mode
-float selfconsumption;
 
-byte batteryType = 0; //0:LiIon; 1:LiPo; 2:LiFePO4;
-int cellcount = 1;            //define Cellcount of the Li-Ion battery
-float max_cellvolts = 4.20;
-float min_cellvolts = 3.00;
-float batteryCapacityAh = 0;  // Full battery capacity in Ah eg 6.6 Ah
-byte orientation = 1;
-byte screen = 0; //default start screen (0-2)
-byte solarmode = 0;  //if in solarmode the system will check for minimum voltage (defined by "startupvoltage")
-byte wifiEnabled = 0;
+//CONFIG START >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
-float startupvoltage = 16.0;
-//CONFIG END
+#define AP    // USES Accespoint Mode instead of joining a preset Network
+#define OLED  // OLED Display 
+#define MQTT  // USE AS SENSOR IN Home Assistant - doesn't work in AP Mode
+
+#ifdef AP
+#undef MQTT
+#endif
+
+//Device Settings START (No need to configure when using an OLED screen and buttons)
+float deviceCurrent = 0.017;      // 17 mA in normal mode
+float deviceCurrentWifi = 0.050;  // 50 mA in WiFi Mode
+byte batteryType = 0;             // 0:LiIon; 1:LiPo; 2:LiFePO4;
+int cellcount = 4;                // define Cellcount of the Li-Ion battery
+float batteryCapacityAh = 50;     // Full battery capacity in Ah eg 6.6 Ah
+byte orientation = 1;             // Screen orientation
+byte screen = 0;                  // default start screen (0-2)
+byte wifiEnabled = 1;             // WiFi active or not
+float pricePerKWh = 0.305;         // 30.5 cents per kWh
+
+//Device Settings END 
+
+#ifdef OLED
+#include <U8g2lib.h>
+//OLED SELECTION (Uncomment the right one for you)
+//U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+//U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
+U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+#endif
+
+const char* ssid = "airport";
+const char* password = "xxx";
+const char* AP_PASSWORD = "12345678";
+
+#ifdef MQTT
+#include <PubSubClient.h>
+const char* mqtt_server = "homeassistant.local";  // or IP of HA
+const int mqtt_port = 1883;
+const char* mqtt_user = "mqtt_user";
+const char* mqtt_pass = "mqtt_password";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+#endif
+
+//CONFIG END >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+
+char AP_SSID[32];
+// Create server on port 80
+static AsyncWebServer server(80);
 
 #define BUTTON1_PIN 1
 #define BUTTON2_PIN 2
+
+float selfconsumption;
 
 float remainingCapacityAh = 0;
 int remainingCapacitymAh = 0;
@@ -67,7 +93,6 @@ int hours = 0;
 int minutes = 0;
 float totalWh = 0;
 float totalKWh = 0.0;
-float pricePerKWh = 0.00; // 15 cents per kWh
 float totalPrice = 0;
 
 byte menu = 0;
@@ -77,6 +102,7 @@ byte menustep = 0;
 #define I2C_ADDRESS 0x40
 unsigned long lastUpdateTime = millis(); // track last update time
 unsigned long bootTime = millis();
+unsigned long lastSensorMillis = 0;
 
 unsigned long lastUpdateMicros = 0;
 unsigned long previousMicros = 0;
@@ -155,39 +181,8 @@ const int lifepo4Points = 9;
 const float lifepo4Voltage[lifepo4Points]  = {3.65, 3.45, 3.40, 3.35, 3.30, 3.25, 3.20, 3.10, 2.90};
 const float lifepo4Capacity[lifepo4Points] = {100,   95,   90,   80,   60,   40,   25,   10,    0};
 
-
-//U8G2_SSD1306_128X32_UNIVISION_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);   // Adafruit ESP8266/32u4/ARM Boards + FeatherWing OLED
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-//U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
-//U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-
 INA226_WE ina226 = INA226_WE(I2C_ADDRESS);
 
-void waitForVoltageReady() {
-  while (true) {
-    voltage = ina226.getBusVoltage_V();
-    mAmpere = ina226.getCurrent_mA();
-
-    float minma = 50;
-
-    Serial.print("SOLARMODE ACTIVE: Minimun voltage: "); 
-    Serial.println(startupvoltage); 
-    if (voltage >= startupvoltage) {
-      statsSaved = false; //enables savig routine when voltage drops again
-      break;  // Exit loop once voltage is stable
-    }
-    //ESCAPE WITH Button1 press if needed
-    else if (digitalRead(BUTTON1_PIN) == LOW) {
-      statsSaved = false; //enables savig routine when voltage drops again
-      break;  // Exit loop once voltage is stable
-    }
-    
-    delay(500);  // Wait and retry
-  }
-}
 
 // Helper to convert __TIME__ (e.g. "14:33:12") to a unique number
 int getCompileTimeSeed() {
@@ -224,24 +219,20 @@ preferences.begin("esp32meter", false); // Open or create namespace
 
   preferences.end();
 
-
-
   Serial.begin(9600);  // Serielle Verbindung starten, damit die Daten am Seriellen Monitor angezeigt werden.
 
-  #ifdef ESP
   EEPROM.begin(512); // Required for ESP32 (allocate flash space)
-  #endif
 
   pinMode(BUTTON1_PIN, INPUT_PULLUP);
   pinMode(BUTTON2_PIN, INPUT_PULLUP);
 
   Wire.begin();
-  Wire.setClock(400000UL);
-  u8g2.setBusClock(400000UL);
-
+  //Wire.setClock(400000UL);
+  #ifdef OLED
+  //u8g2.setBusClock(400000UL);
+  #endif
   ina226.init();
   Serial.println("INIT");  // shows the voltage measured
-
 
   /* Set Number of measurements for shunt and bus voltage which shall be averaged
   * Mode *     * Number of samples *
@@ -287,11 +278,7 @@ preferences.begin("esp32meter", false); // Open or create namespace
   //ina226.setResistorRange(0.000515,40.0); // 0.0005 > 05m
   ina226.waitUntilConversionCompleted();  //if you comment this line the first data might be zero
 
-
-
-
-
-
+#ifdef OLED
 // READ FROM EEPROM
 
 //SETTINGS
@@ -303,24 +290,8 @@ Serial.println("Getting COFIG:");
       if (batteryType > 2) { //check for valid batery type
         batteryType = 0;
       }
-      
-  //UPDATE BATTERY LIMITS
-  if (batteryType == 0) { //LiIon
-      max_cellvolts = 4.20;
-      min_cellvolts = 3.00;
-  }
-  else if (batteryType == 1) { //LiPo
-      max_cellvolts = 4.20;
-      min_cellvolts = 3.30;
-  }
-  else if (batteryType == 2) { //LiFePO4
-      max_cellvolts = 3.65;
-      min_cellvolts = 2.50;
-  }
-
+  
        cellcount = EEPROM.read(cellAddress); //cellcount
-       //max_cellvolts = EEPROM.read(max_cellAddress);
-       //min_cellvolts = EEPROM.read(min_cellAddress);
        batteryCapacityAh = EEPROM.get(cap_Address, batteryCapacityAh); //Capacity  > 999.9 Ah
        pricePerKWh = EEPROM.get(price_Address, pricePerKWh); //Price per kWh > 0,00 ct
 
@@ -331,47 +302,28 @@ Serial.println("Getting COFIG:");
 if (isnan(pricePerKWh) || pricePerKWh < 0 || pricePerKWh > 1000) {
   pricePerKWh = 0.000;  // //DEFAULT VALUE
   EEPROM.put(price_Address, pricePerKWh);
-  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
-  #endif
 }
       
  // If value is out of bounds, initialize it
 if (isnan(batteryCapacityAh) || batteryCapacityAh < 0 || batteryCapacityAh > 1000) {
   batteryCapacityAh = 1.0;  // //DEFAULT VALUE
   EEPROM.put(cap_Address, batteryCapacityAh);
-  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
-  #endif
 }
 
- solarmode = EEPROM.read(mode_Address); //SolarMode 0/1
- if (solarmode > 1) {
-        solarmode = 0; //DEFAULT VALUE
-        EEPROM.put(mode_Address, solarmode); //Correct 
-        #ifdef ESP
-        EEPROM.commit();   // Also required on ESP32 to save changes to flash
-        #endif
-      }
-      if (solarmode == 1) {
-        screen = 1; //SET THE STATRUP SCREEN VIEW
-      }
 
 wifiEnabled = EEPROM.read(wifi_Address); //WiFimode 0/1
       if (wifiEnabled > 1) {
         wifiEnabled = 0; //DEFAULT VALUE
         EEPROM.put(wifi_Address, wifiEnabled); //Correct 
-        #ifdef ESP
         EEPROM.commit();   // Also required on ESP32 to save changes to flash
-        #endif
       }
 
 screen = EEPROM.read(screen_Address);
 if (screen > 2){ screen = 0; }
 orientation = EEPROM.read(orientation_Address);
 if (orientation > 3){ orientation = 0; }
-
-
 
 Serial.print("batteryType "); 
 Serial.println(batteryType); 
@@ -381,8 +333,6 @@ Serial.print("batteryCapacityAh ");
 Serial.println(batteryCapacityAh); 
 Serial.print("pricePerKWh "); 
 Serial.println(pricePerKWh); 
-Serial.print("Solarmode "); 
-Serial.println(solarmode);
 Serial.print("wifiEnabled "); 
 Serial.println(wifiEnabled); 
 Serial.print("orientation "); 
@@ -399,13 +349,10 @@ remainingCapacityAh = EEPROM.get(remcap_Address, remainingCapacityAh);
 if (isnan(remainingCapacityAh) || remainingCapacityAh < 0 || remainingCapacityAh > 1000) {
   remainingCapacityAh = 1.0;  // reasonable default
   EEPROM.put(remcap_Address, remainingCapacityAh);
-  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
-  #endif
 }
 
   remainingCapacitymAh = remainingCapacityAh * 1000.0;
-
   totalKWh = EEPROM.get(kwh_Address, totalKWh);
 
   // Reset if invalid (e.g., negative, NaN, or absurdly high)
@@ -415,12 +362,6 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
   EEPROM.put(kwh_Address, totalKWh);
   EEPROM.commit();
 }
-
-
-
-  //get ENERGY STATS
-
-
 
   Serial.println("Getting STATS:"); 
   Serial.print("remainingCapacityAh ");
@@ -437,13 +378,8 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
   totalWh = totalKWh * 1000.0;
   totalPrice = totalKWh * pricePerKWh;
 
-  //CHECK FOR WOLTAGE IF SOLAR MODE IS ACTIVE
 
-  if (solarmode == 1) {
-    selfconsumption = deviceCurrentWifi;
-  waitForVoltageReady();  // Wait until voltage >= definedStartVoltage
-  }
-
+//OLED INIT
   u8g2.begin();
   u8g2.setDisplayRotation(U8G2_R1);
   //u8g2.setContrast(255);
@@ -464,7 +400,7 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
       u8g2.setDisplayRotation(U8G2_R0);
       u8g2.clear();
     } 
-
+#endif
 
 
 ///SERVER INIT
@@ -505,6 +441,12 @@ if (wifiEnabled == 1) {
     Serial.println("\nFailed to connect to WiFi.");
     return;
   }
+
+  #ifdef MQTT
+  // MQTT
+  client.setServer(mqtt_server, mqtt_port);
+  #endif
+
 #endif
 
   // Serve static files from LittleFS
@@ -637,9 +579,7 @@ void disableWiFiServer() {
   EEPROM.put(wifi_Address, wifiEnabled);  // total Wh produced
 
   //save wifi state
-  #ifdef ESP
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
-  #endif
 
   delay(500);
   //Serial.println("Restarting...");
@@ -747,9 +687,6 @@ remainingCapacityAh = constrain(remainingCapacityAh, 0.0, batteryCapacityAh);
 }
 
     cellvolt = voltage / cellcount;
-    //cellvolt = constrain(cellvolt, min_cellvolts, max_cellvolts);
-    //capacity = ((cellvolt - min_cellvolts) / (max_cellvolts - min_cellvolts)) * 100.0;
-    //capacity = constrain(capacity, 0.0, 100.0);
 
 // Lookup capacity from appropriate curve
 switch (batteryType) {
@@ -839,10 +776,58 @@ if (millis() - lastCapacityMinuteMillis >= 600000UL) {  // 10 min
   historyVoltage[71] = voltage;  // Store the bus voltage
 }
 
-
-
 }
 
+
+#ifdef MQTT
+
+unsigned long lastMqttAttempt = 0;
+const unsigned long mqttRetryInterval = 5000;  // 5 seconds
+
+void checkMQTTConnection() {
+  if (!client.connected()) {
+    unsigned long now = millis();
+    if (now - lastMqttAttempt > mqttRetryInterval) {
+      lastMqttAttempt = now;
+      Serial.println("Attempting MQTT connection...");
+
+      if (client.connect("PowerMeter", mqtt_user, mqtt_pass)) {
+        Serial.println("MQTT connected");
+        // client.subscribe("your/topic");  // If needed
+      } else {
+        Serial.print("MQTT failed, rc=");
+        Serial.print(client.state());
+        Serial.println(" retrying in 5 seconds");
+      }
+    }
+  } else {
+    client.loop();  // Keep MQTT connection alive
+  }
+}
+
+void publishToMQTT() {
+  if (!client.connected()) {
+   client.connect("PowerMeter", mqtt_user, mqtt_pass);
+  }
+
+  client.loop(); // process incoming messages
+
+  // Prepare metrics
+  float soc = capacity; // in %
+  float charging_watts = (cur_dir == 2) ? watts : 0;
+  float discharging_watts = (cur_dir == 1) ? watts : 0;
+  float battery_voltage = voltage;                // Bus voltage (V)
+  float battery_current = (cur_dir == 1) ? -Ampere : Ampere; // Negative if discharging
+
+
+  // Publish
+  client.publish("power_meter/state_of_charge", String(soc, 1).c_str(), true);
+  client.publish("power_meter/charge_power", String(charging_watts, 1).c_str(), true);
+  client.publish("power_meter/discharge_power", String(discharging_watts, 1).c_str(), true);
+  client.publish("power_meter/voltage", String(battery_voltage, 2).c_str(), true);
+  client.publish("power_meter/current", String(battery_current, 3).c_str(), true);
+}
+#endif
 
 
 void handleButton(int pin, bool &state, unsigned long &pressTime, bool &handled, int buttonValue) {
@@ -875,16 +860,15 @@ bool isPressed = digitalRead(pin) == LOW;
 
 
 
-
+#ifdef OLED
 void buttoncheck() {
 
 
 if (menu == 0) {
-
+ 
   if (pressedbt == 22) {
     menu = 1; //ENTER MENU SCREEN
     }
-
     if (pressedbt == 11) { //TURN ON/OFF WIFI
     //wifiEnabled = !wifiEnabled;
     if (wifiEnabled == 1) {
@@ -904,16 +888,13 @@ if (menu == 0) {
       //}
 
 
-      #ifdef ESP
       EEPROM.commit();   // Also required on ESP32 to save changes to flash
-      #endif
       esp_restart();
  // Restart to re-enable Wi-Fi/server
     }
   }
-
+  
   if (pressedbt == 2) {
-
         if (screen == 0) {
         u8g2.clear();
         screen = 1;
@@ -924,7 +905,6 @@ if (menu == 0) {
         u8g2.clear();
         screen = 0;
       }
-
 
   } else if (pressedbt == 1) { // CHANGE SCREEN ORIENTATION
 
@@ -952,6 +932,7 @@ if (menu == 0) {
       u8g2.clear();
     } 
   }
+
 }
 
 else if (menu == 1) {
@@ -1020,11 +1001,7 @@ else if (menu == 1) {
        //EEPROM.put(remcap_Address, remainingCapacityAh); // remaining cap in Ah
        EEPROM.put(kwh_Address, totalKWh);  // total Wh produced
        EEPROM.put(price_Address, totalPrice);  // total price 
-
-
-       #ifdef ESP
        EEPROM.commit();   // Also required on ESP32 to save changes to flash
-       #endif
         
 
     // RESET ENERGY RECORDS
@@ -1044,52 +1021,20 @@ for (int i = 0; i < 60; i++) {
        reset = 1;
     }
 
-    else if ((menustep == 8) && (pressedbt == 1)) { //SOLAR MODE
+    else if ((menustep == 8) && (pressedbt == 1)) { //EXIT MENU
     
-      if (solarmode == 0) {
-      solarmode = 1;
-    }
-    else {
-      solarmode = 0;
-    }
-    }
-
-
-    else if ((menustep == 9) && (pressedbt == 1)) { //EXIT MENU SCREEN
-
-      //UPDATE BATTERY LIMITS
-  if (batteryType == 0) { //LiIon
-      max_cellvolts = 4.20;
-      min_cellvolts = 3.00;
-  }
-  else if (batteryType == 1) { //LiPo
-      max_cellvolts = 4.20;
-      min_cellvolts = 3.30;
-  }
-  else if (batteryType == 2) { //LiFePO4
-      max_cellvolts = 3.65;
-      min_cellvolts = 2.50;
-  }
-
 //SAVE TO EPROM
        EEPROM.put(typeAddress, batteryType); //batteryType
        EEPROM.put(cellAddress, cellcount); //cellcount
        EEPROM.put(cap_Address, batteryCapacityAh); //Capacity  > 999.9 Ah
        EEPROM.put(price_Address, pricePerKWh); //Price per kWh > 0,00 ct
-       EEPROM.put(mode_Address, solarmode); //solarmode setting
        EEPROM.write(screen_Address, screen);
        EEPROM.write(orientation_Address, orientation);
        EEPROM.put(remcap_Address, remainingCapacityAh); // remaining cap in Ah
        EEPROM.put(kwh_Address, totalKWh);  // tatal Wh produced
 
-       #ifdef ESP
        EEPROM.commit();   // Also required on ESP32 to save changes to flash
-       #endif
-        Serial.println("Settings saved");
-        Serial.print("solarmode ");
-        Serial.println(solarmode);
-        Serial.print("orientation ");
-        Serial.println(orientation);
+       Serial.println("Settings saved");
 
     saved = 0;
     reset = 0;
@@ -1179,8 +1124,6 @@ else if (menu == 3) { // CHAR MOD MENU PRICE
     }
     
 }
-
-
  if (pressedbt != 0) {
     Serial.print("Pressed button value: ");
     Serial.println(pressedbt);
@@ -1192,19 +1135,11 @@ else if (menu == 3) { // CHAR MOD MENU PRICE
   //Serial.println(menustep);
   //Serial.print("menu: ");
   //Serial.println(menu);
-
-
 }
 
 void draw() {
   u8g2.firstPage();
   do {
-   
-
-
-  
-
-
     if (screen == 0) {
       //pagination
       u8g2.drawBox(92, 4, 5, 5);
@@ -1217,7 +1152,6 @@ void draw() {
       u8g2.drawFrame(120, 6, 4, 1);
       u8g2.drawFrame(121, 8, 2, 1);
       }
-
 
       u8g2.setFont(u8g2_font_6x10_tr);
       u8g2.setCursor(0, 10);
@@ -1260,17 +1194,13 @@ void draw() {
       u8g2.println(" %");
 
 
-
 // Batery ICON 
       u8g2.drawFrame(89,21,6,2);
       u8g2.drawFrame(114,21,6,2);
       u8g2.drawFrame(85,24,39,30);
 
-    
-
       u8g2.setFontMode(0); 
       u8g2.setDrawColor(2);
-
 
 
       //CAPACITY BAR
@@ -1400,7 +1330,6 @@ void draw() {
       u8g2.setFont(u8g2_font_6x10_tr);
       u8g2.println("PEAK W");
 
-
       //2nd row
       u8g2.setFont(u8g2_font_fub20_tr);
       u8g2.setCursor(0, 72);
@@ -1487,7 +1416,6 @@ void draw() {
         u8g2.println(" mA");
 
       }
-
       
       //3rd line
       //u8g2.setCursor(5, 95);
@@ -1516,15 +1444,12 @@ void draw() {
       u8g2.setCursor(0, 123);
       u8g2.print("PEAK ");
       u8g2.print(maxA, 2);
-      u8g2.print(" A");
-
-
-    
-      
+      u8g2.print(" A");    
     }
 
   } while (u8g2.nextPage());
 }
+
 
 
 
@@ -1604,17 +1529,7 @@ else {
     }
 
     u8g2.setCursor(5, 56);
-    u8g2.println("Solar Mode ");
-    if (solarmode != 0) {
-      u8g2.println("ON");
-    }
-    else {
-      u8g2.println("OFF");
-    }
-    
-    u8g2.setCursor(5, 77);
     u8g2.println("Save & Exit");
-
 
     //Show SSID Name
     u8g2.setFont(u8g2_font_6x10_tr);
@@ -1631,7 +1546,6 @@ else {
 
     #endif
 }
-
 
 
   //u8g2.drawStr(0, 30, AP_SSID);
@@ -1665,16 +1579,9 @@ else {
        else if ((submenu == 0) && (menustep == 8)) {
     u8g2.drawBox(0,42,128,20);
     }
-         else if ((submenu == 0) && (menustep == 9)) {
-    u8g2.drawBox(0,63,128,20);
-    }
-    
-
-
 
     } while (u8g2.nextPage());
 }
-
 
 
 
@@ -1686,8 +1593,6 @@ void capscreen() {
     u8g2.setFont(u8g2_font_7x13B_tr);
     u8g2.setCursor(5, 10);
     u8g2.print("Capacity in Ah");
-
-
 
     for (int i = 0; i < 6; i++) {
     int x = 10 + i * 12;
@@ -1746,8 +1651,7 @@ void pricescreen() {
     } while (u8g2.nextPage());
 }
 
-
-
+#endif
 
 
 void loop() {
@@ -1755,25 +1659,19 @@ void loop() {
   handleButton(BUTTON2_PIN, button2State, button2PressTime, button2Handled, 2);
   
   sensorread();
+
+  #ifdef MQTT
+  if (millis() - lastSensorMillis >= 1000) {
+  lastSensorMillis = millis();
+  checkMQTTConnection();
+  publishToMQTT();
+   }
+  #endif
+  #ifdef OLED
   buttoncheck();
+  #endif
 
-if (solarmode == 1) {
-
-
-//   save some stats if voltage getting low
-   if (voltage < startupvoltage && !statsSaved) {
-      // Save stats to EEPROM once
-      EEPROM.put(remcap_Address, remainingCapacityAh); // Remaining capacity in Ah
-      EEPROM.put(kwh_Address, totalKWh);               // Total kWh produced
-      #ifdef ESP
-      EEPROM.commit();  // Needed for some platforms like ESP
-      #endif
-      statsSaved = true;
-      Serial.println("Voltage dropped below startup voltage, stats saved.");
-    }
-
-
- if (voltage > startupvoltage) {  //DO USUAL STUFF IF VOLTAGE IS ABOVE startupvoltage
+  #ifdef OLED
   if (menu == 0) {
   draw();
   }
@@ -1786,43 +1684,7 @@ if (solarmode == 1) {
    else if (menu == 3) {
   pricescreen();
   }
- }
- else { // CLEAR SCREEN if voltage drops startupvoltage
-  if (menu == 0) {
-  // clear screen
-    u8g2.clear();
-  }
-  else if (menu == 1) {
-  menuscreen();
-  }
-  else if (menu == 2) {
-  capscreen();
-  }
-   else if (menu == 3) {
-  pricescreen();
-  }
- }
-
-}
-else if (solarmode == 0) { //DO USUAL STUFF
-  if (menu == 0) {
-  draw();
-  }
-  else if (menu == 1) {
-  menuscreen();
-  }
-  else if (menu == 2) {
-  capscreen();
-  }
-   else if (menu == 3) {
-  pricescreen();
-  }
-}
-
-
-
-
-
+  #endif
 }
 
 
