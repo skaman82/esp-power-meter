@@ -15,7 +15,7 @@ Measuring and Logging Current/Battery Status. Solar Panel tester and a Home Assi
 
 ---
 
-## **Parts Needed**
+## **Parts needed**
 - **ESP32-C3 PRO MINI**  
 - **5V BEC** (iFlight 5V 2-8S)  
 - **INA226 Module** + 3920 5W 2mΩ Shunt (R002)  
