@@ -2,6 +2,15 @@
 
 Measuring and Logging Current/Battery Status. Solar Panel tester and a Home Assistant Battery Sensor
 
+Device Image:
+![Device](device.png)
+
+Web Interface:
+![UI](ui.png)
+
+Custom PCB:
+![Device](custom_board.jpg)
+
 ---
 
 ## **Features**
