@@ -1,0 +1,32 @@
+# Example configuration.yaml entry
+mqtt:
+  sensor:
+  - name: "Battery SoC"
+    state_topic: "power_meter/state_of_charge"
+    unit_of_measurement: "%"
+    device_class: battery
+    unique_id: "battery_soc"
+
+  - name: "Charge Power"
+    state_topic: "power_meter/charge_power"
+    unit_of_measurement: "W"
+    device_class: power
+    unique_id: "charge_power"
+
+  - name: "Discharge Power"
+    state_topic: "power_meter/discharge_power"
+    unit_of_measurement: "W"
+    device_class: power
+    unique_id: "discharge_power"
+    
+  - name: "Battery Voltage"
+    state_topic: "power_meter/voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    unique_id: "battery_voltage"
+    
+  - name: "Battery Current"
+    state_topic: "power_meter/current"
+    unit_of_measurement: "A"
+    device_class: current
+    unique_id: "battery_current"

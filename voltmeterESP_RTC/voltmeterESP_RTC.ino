@@ -20,9 +20,11 @@ Preferences preferences;  // Declare this globallychar AP_SSID[32];
 
 //CONFIG START >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
-#define AP      // USES Accespoint Mode instead of joining a preset Network.
+//MAIN FUNCTIONS:
+
+//#define AP      // Accespoint Mode instead of joining a preset Network.
 //#define OLED    // OLED Display 
-//#define MQTT    // USE AS SENSOR IN Home Assistant - doesn't work in AP Mode
+#define MQTT    // USE AS SENSOR IN Home Assistant - doesn't work in AP Mode
 
 
 //Device Settings START (no need to configure this if using an OLED screen and buttons)
@@ -211,6 +213,62 @@ int getCompileTimeSeed() {
   return seed % 900 + 100; // Ensure it's 3-digit
 }
 
+
+
+ #ifdef MQTT
+#include <ArduinoJson.h>
+
+void publishDiscoverySensor(const char* object_id, const char* name, const char* unit, const char* device_class, const char* state_class, const char* topic) {
+  String configTopic = String("homeassistant/sensor/power_meter_") + object_id + "/config";
+
+  StaticJsonDocument<512> doc;
+  doc["name"] = name;
+  doc["state_topic"] = topic;
+  doc["unique_id"] = String("power_meter_") + object_id;
+  doc["unit_of_measurement"] = unit;
+
+  if (device_class && strlen(device_class) > 0) doc["device_class"] = device_class;
+  if (state_class && strlen(state_class) > 0) doc["state_class"] = state_class;
+
+  JsonObject device = doc.createNestedObject("device");
+  device["identifiers"] = "power_meter";
+  device["manufacturer"] = "Custom";
+  device["model"] = "ESP Power Meter";
+  device["name"] = "Power Meter";
+
+  char buffer[512];
+  size_t len = serializeJson(doc, buffer);
+
+  client.publish(configTopic.c_str(), buffer, true);
+}
+
+void publishAllDiscovery() {
+
+  //float soc = capacity; // in %
+  //float charging_watts = (cur_dir == 2) ? watts : 0;
+  //float discharging_watts = (cur_dir == 1) ? watts : 0;
+  //float battery_voltage = voltage;                // Bus voltage (V)
+  //float battery_current = (cur_dir == 1) ? -Ampere : Ampere; // Negative if discharging
+
+
+
+  publishDiscoverySensor(
+    "soc", "State of Charge", "%", "battery", "measurement", "power_meter/state_of_charge");
+
+  publishDiscoverySensor(
+    "voltage", "Voltage", "V", "voltage", "measurement", "power_meter/voltage");
+
+  publishDiscoverySensor(
+    "current", "Current", "A", "current", "measurement", "power_meter/current");
+
+  publishDiscoverySensor(
+    "charge_power", "Charge Power", "W", "power", "measurement", "power_meter/charge_power");
+
+  publishDiscoverySensor(
+    "discharge_power", "Discharge Power", "W", "power", "measurement", "power_meter/discharge_power");
+}
+
+#endif
 
 
 void setup() {
@@ -831,6 +889,9 @@ void checkMQTTConnection() {
 
       if (client.connect("PowerMeter", mqtt_user, mqtt_pass)) {
         Serial.println("MQTT connected");
+
+        publishAllDiscovery(); // <-- Send discovery info
+
         // client.subscribe("your/topic");  // If needed
       } else {
         Serial.print("MQTT failed, rc=");
@@ -859,11 +920,12 @@ void publishToMQTT() {
 
 
   // Publish
-  client.publish("power_meter/state_of_charge", String(soc, 1).c_str(), true);
-  client.publish("power_meter/charge_power", String(charging_watts, 1).c_str(), true);
-  client.publish("power_meter/discharge_power", String(discharging_watts, 1).c_str(), true);
-  client.publish("power_meter/voltage", String(battery_voltage, 2).c_str(), true);
-  client.publish("power_meter/current", String(battery_current, 3).c_str(), true);
+client.publish("power_meter/state_of_charge", String(capacity, 1).c_str(), true);
+client.publish("power_meter/voltage", String(voltage, 2).c_str(), true);
+client.publish("power_meter/current", String(Ampere, 2).c_str(), true);
+client.publish("power_meter/charge_power", String((cur_dir == 2) ? watts : 0, 1).c_str(), true);
+client.publish("power_meter/discharge_power", String((cur_dir == 1) ? watts : 0, 1).c_str(), true);
+
 }
 #endif
 
