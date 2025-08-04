@@ -203,7 +203,6 @@ void handleButtons();
 void handleEnergyLogging();
 float estimateCapacity(float voltage, const float* volts, const float* caps, int size);
 void saveConfigToEEPROM();
-void loadConfigFromEEPROM();
 
 #ifdef OLED
 void updateDisplay();
@@ -274,12 +273,13 @@ void initializeSystem() {
     
     // Initialize subsystems
     initializeSSID();
-    initializeHardware();
     
     #ifdef OLED
     initializeEEPROM();
     #endif
     
+    initializeHardware();
+
     if (config.wifiEnabled) {
         initializeWiFi();
         
@@ -441,6 +441,8 @@ void initializeEEPROM() {
     Serial.println("Cell Count: " + String(config.cellcount));
     Serial.println("Capacity: " + String(config.batteryCapacityAh) + " Ah");
     Serial.println("Price/kWh: " + String(config.pricePerKWh));
+    Serial.println("Orientation: " + String(config.orientation));
+    Serial.println("Screen: " + String(config.screen));
 }
 
 /**
@@ -849,13 +851,13 @@ void handleButton(int pin, bool &state, unsigned long &pressTime, bool &handled,
  * Save current configuration to EEPROM
  */
 void saveConfigToEEPROM() {
-    EEPROM.put(EEPROMAddresses::TYPE, config.batteryType);
-    EEPROM.put(EEPROMAddresses::CELL, config.cellcount);
+    EEPROM.write(EEPROMAddresses::TYPE, config.batteryType);
+    EEPROM.write(EEPROMAddresses::CELL, config.cellcount);
     EEPROM.put(EEPROMAddresses::CAPACITY, config.batteryCapacityAh);
     EEPROM.put(EEPROMAddresses::PRICE, config.pricePerKWh);
-    EEPROM.put(EEPROMAddresses::SCREEN, config.screen);
-    EEPROM.put(EEPROMAddresses::ORIENTATION, config.orientation);
-    EEPROM.put(EEPROMAddresses::WIFI, config.wifiEnabled);
+    EEPROM.write(EEPROMAddresses::SCREEN, config.screen);
+    EEPROM.write(EEPROMAddresses::ORIENTATION, config.orientation);
+    EEPROM.write(EEPROMAddresses::WIFI, config.wifiEnabled);
     EEPROM.put(EEPROMAddresses::REMAINING_CAP, sensorData.remainingCapacityAh);
     EEPROM.put(EEPROMAddresses::KWH, sensorData.totalKWh);
     EEPROM.commit();
