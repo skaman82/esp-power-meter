@@ -35,7 +35,7 @@
 // ===== DEVICE CONFIGURATION =====
 struct DeviceConfig {
     float deviceCurrent = 0.013f;        // 13 mA in normal mode
-    float deviceCurrentWifi = 0.036f;    // 36 mA in WiFi Mode
+    float deviceCurrentWifi = 0.033f;    // 33 mA in WiFi Mode
     byte batteryType = 2;                // 0:LiIon; 1:LiPo; 2:LiFePO4
     int cellcount = 4;                   // Battery cell count
     float batteryCapacityAh = 50.00f;    // Full battery capacity in Ah
@@ -71,8 +71,8 @@ U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 #include <PubSubClient.h>
 const char* MQTT_SERVER = "homeassistant.local";
 const int MQTT_PORT = 1883;
-const char* MQTT_USER = "mqtt_user";
-const char* MQTT_PASS = "mqtt_password";
+const char* MQTT_USER = "mqtt_user"; //mqtt_user
+const char* MQTT_PASS = "mqtt_password"; //mqtt_password
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 #endif
@@ -644,9 +644,6 @@ void updateSensorData() {
     
     // Calculate power
     sensorData.watts = sensorData.voltage * sensorData.current;
-    if (sensorData.currentDirection == 2) {
-        sensorData.watts = -sensorData.watts; // Negative for charging
-    }
     
     // Update maximum values
     if (sensorData.current > sensorData.maxCurrent) {
@@ -1665,6 +1662,7 @@ void publishSensorData() {
     float chargingWatts = (sensorData.currentDirection == 2) ? abs(sensorData.watts) : 0;
     float dischargingWatts = (sensorData.currentDirection == 1) ? abs(sensorData.watts) : 0;
     float batteryCurrent = (sensorData.currentDirection == 1) ? -sensorData.current : sensorData.current;
+
     
     // Publish sensor values
     mqttClient.publish((baseTopic + "/capacity").c_str(), 
