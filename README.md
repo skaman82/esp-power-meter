@@ -3,13 +3,13 @@
 Measuring and logging current/battery status. Solar panel tester and a Home Assistant MQTT battery sensor
 
 Device Image:
-![Device](device.png)
+![Device](img/device.png)
 
 Web Interface:
-![UI](ui.png)
+![UI](img/ui.png)
 
 Custom INA266 PCB:
-![Device](custom_board.jpg)
+![Device](img/custom_board.jpg)
 
 ---
 
