@@ -148,7 +148,6 @@ struct UIControl {
     unsigned long button2PressTime = 0;
     bool button1Handled = false;
     bool button2Handled = false;
-    
     const unsigned long LONG_PRESS_TIME = 500;
     
     // Display buffers
