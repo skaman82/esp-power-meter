@@ -29,7 +29,7 @@
 
 // ===== FEATURE TOGGLES =====
 #define OLED                  // Enable OLED Display 
-#define MQTT                  // Enable MQTT for Home Assistant
+//#define MQTT                  // Enable MQTT for Home Assistant
 #define WEBSERVER             // Enable Web UI
 
 // ===== DEVICE CONFIGURATION =====
@@ -1700,9 +1700,9 @@ void publishDiscoveryMessages() {
     // Publish discovery for each sensor
     publishDiscoveryEntity("capacity", "%", "battery", "mdi:battery", "", baseTopic);
     publishDiscoveryEntity("voltage", "V", "voltage", "mdi:flash", "", baseTopic);
-    publishDiscoveryEntity("charging_watts", "W", "power", "mdi:battery-charging", "", baseTopic);
+    publishDiscoveryEntity("charging_watts", "W", "power", "mdi:battery-plus", "", baseTopic);
     publishDiscoveryEntity("discharging_watts", "W", "power", "mdi:battery-minus", "", baseTopic);
-    publishDiscoveryEntity("battery_current", "A", "current", "mdi:current-dc", "", baseTopic);
+    publishDiscoveryEntity("battery_current", "A", "current", "mdi:sine-wave", "", baseTopic);
 }
 
 /**
