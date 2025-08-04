@@ -1,5 +1,5 @@
 // HARDWARE DFROBOT Beetle ESP32-C3 ()
-// Running at 40MHz
+// Running at 80MHz
 
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -7,8 +7,8 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <time.h>
-#include <Preferences.h>  // Include this at the top
-Preferences preferences;  // Declare this globallychar AP_SSID[32];
+#include <Preferences.h> 
+Preferences preferences;  
 #include <INA226_WE.h>
 #include <Arduino.h>
 #include <Wire.h>
@@ -17,28 +17,29 @@ Preferences preferences;  // Declare this globallychar AP_SSID[32];
 #include "RTClib.h"
 
 
-
 //CONFIG START >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 //MAIN FUNCTIONS:
-
-//#define AP      // Accespoint Mode instead of joining a preset Network.
-//#define OLED    // OLED Display 
-#define MQTT    // USE AS SENSOR IN Home Assistant - doesn't work in AP Mode
-
+#define OLED            // OLED Display 
+#define MQTT          // USE AS SENSOR IN Home Assistant - won't work in AP Mode
+#define WEBSERVER     // WEB UI
 
 //Device Settings START (no need to configure this if using an OLED screen and buttons)
 float deviceCurrent = 0.013;      // 13 mA in normal mode //
 float deviceCurrentWifi = 0.036;  // 36 mA in WiFi Mode //34 no OLED @160mhz - 31ma @ 80mhz
-byte batteryType = 0;             // 0:LiIon; 1:LiPo; 2:LiFePO4;
+byte batteryType = 2;             // 0:LiIon; 1:LiPo; 2:LiFePO4;
 int cellcount = 4;                // define Cellcount of the Li-Ion battery
 float batteryCapacityAh = 50.00;  // Full battery capacity in Ah eg 6.6 Ah
 byte orientation = 1;             // Screen orientation
 byte screen = 0;                  // default start screen (0-2)
 byte wifiEnabled = 1;             // WiFi active or not
-float pricePerKWh = 0.305;        // 30.5 cents per kWh
+float pricePerKWh = 0.327;        // 30.5 cents per kWh
 
 //Device Settings END
+const char* ssid = "airport";
+const char* password = "babylon5";
+const char* AP_PASSWORD = "12345678"; //Password for AP mode
+
 
 #ifdef OLED
 #include <U8g2lib.h>
@@ -49,17 +50,12 @@ float pricePerKWh = 0.305;        // 30.5 cents per kWh
 U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 #endif
 
-const char* ssid = "airport";
-const char* password = "babylon5";
-const char* AP_PASSWORD = "12345678"; //Password for AP mode
-
-#ifdef AP
-#undef MQTT
-#endif
 
 #ifdef MQTT
+// MQTT Settings
 #include <PubSubClient.h>
 const char* mqtt_server = "homeassistant.local";  // or IP of HA
+//const char* mqtt_server = "192.168.4.2";  // Your Mac's IP in AP network
 const int mqtt_port = 1883;
 const char* mqtt_user = "mqtt_user";
 const char* mqtt_pass = "mqtt_password";
@@ -69,7 +65,6 @@ PubSubClient client(espClient);
 #endif
 
 //CONFIG END >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-
 
 
 char AP_SSID[32];
@@ -200,6 +195,28 @@ const float lifepo4Capacity[lifepo4Points] = {100,   95,   90,   80,   60,   40,
 INA226_WE ina226 = INA226_WE(I2C_ADDRESS);
 
 
+#ifdef MQTT
+const unsigned long mqttRetryInterval = 5000;
+unsigned long lastMqttAttempt = 0;
+
+struct SensorData {
+  float voltage = 0.0;
+  float capacity = 0.0;
+  float Ampere = 0.0;
+  int watts = 0;
+  byte cur_dir = 0; // 0 = idle, 1 = discharging, 2 = charging
+  
+  // Calculated values based on your logic
+  float soc = 0.0;
+  float charging_watts = 0.0;
+  float discharging_watts = 0.0;
+  float battery_voltage = 0.0;
+  float battery_current = 0.0;
+};
+
+SensorData sensorData;
+#endif
+
 // Helper to convert __TIME__ (e.g. "14:33:12") to a unique number
 int getCompileTimeSeed() {
   const char* timeStr = __TIME__; // "HH:MM:SS"
@@ -215,97 +232,85 @@ int getCompileTimeSeed() {
 
 
 
- #ifdef MQTT
-#include <ArduinoJson.h>
-
-void publishDiscoverySensor(const char* object_id, const char* name, const char* unit, const char* device_class, const char* state_class, const char* topic) {
-  String configTopic = String("homeassistant/sensor/power_meter_") + object_id + "/config";
-
-  StaticJsonDocument<512> doc;
-  doc["name"] = name;
-  doc["state_topic"] = topic;
-  doc["unique_id"] = String("power_meter_") + object_id;
-  doc["unit_of_measurement"] = unit;
-
-  if (device_class && strlen(device_class) > 0) doc["device_class"] = device_class;
-  if (state_class && strlen(state_class) > 0) doc["state_class"] = state_class;
-
-  JsonObject device = doc.createNestedObject("device");
-  device["identifiers"] = "power_meter";
-  device["manufacturer"] = "Custom";
-  device["model"] = "ESP Power Meter";
-  device["name"] = "Power Meter";
-
-  char buffer[512];
-  size_t len = serializeJson(doc, buffer);
-
-  client.publish(configTopic.c_str(), buffer, true);
-}
-
-void publishAllDiscovery() {
-
-  //float soc = capacity; // in %
-  //float charging_watts = (cur_dir == 2) ? watts : 0;
-  //float discharging_watts = (cur_dir == 1) ? watts : 0;
-  //float battery_voltage = voltage;                // Bus voltage (V)
-  //float battery_current = (cur_dir == 1) ? -Ampere : Ampere; // Negative if discharging
-
-
-
-  publishDiscoverySensor(
-    "soc", "State of Charge", "%", "battery", "measurement", "power_meter/state_of_charge");
-
-  publishDiscoverySensor(
-    "voltage", "Voltage", "V", "voltage", "measurement", "power_meter/voltage");
-
-  publishDiscoverySensor(
-    "current", "Current", "A", "current", "measurement", "power_meter/current");
-
-  publishDiscoverySensor(
-    "charge_power", "Charge Power", "W", "power", "measurement", "power_meter/charge_power");
-
-  publishDiscoverySensor(
-    "discharge_power", "Discharge Power", "W", "power", "measurement", "power_meter/discharge_power");
-}
-
-#endif
 
 
 void setup() {
 
-  // GENERATING SSID Name:
-preferences.begin("esp32meter", false); // Open or create namespace
-
-  if (!preferences.isKey("ssid")) {
-    // Generate and store a new 3-digit suffix
-    randomSeed(esp_random()); // Use ESP32's hardware RNG
-    int suffix = random(100, 1000); // 100 to 999
-
-    snprintf(AP_SSID, sizeof(AP_SSID), "ESP32-Meter %d", suffix);
-    preferences.putString("ssid", AP_SSID);  // Save the SSID
-  } else {
-    // Load previously saved SSID
-    String storedSSID = preferences.getString("ssid", "ESP32-Meter");
-    storedSSID.toCharArray(AP_SSID, sizeof(AP_SSID));
-  }
-
-  preferences.end();
-
-
-
   Serial.begin(9600);  // Serielle Verbindung starten, damit die Daten am Seriellen Monitor angezeigt werden.
-
-  EEPROM.begin(512); // Required for ESP32 (allocate flash space)
 
   pinMode(BUTTON1_PIN, INPUT_PULLUP);
   pinMode(BUTTON2_PIN, INPUT_PULLUP);
 
-  Wire.begin();
+  // Initialize preferences
+  initializeSSID();
+  
+  // Initialize hardware
+  initializeHardware();
+
+  // Initialize EEPROM
+  #ifdef OLED
+  initializeEEPROM();
+  #endif
+
+if (wifiEnabled == 1) {
+  // Initialize WiFi
+  initializeWiFi();
+
+  #ifdef MQTT
+  // Initialize MQTT
+  initializeMQTT();
+  #endif
+  
+  #ifdef WEBSERVER
+  // Initialize Webserver
+  initializeWebServer();
+  #endif
+
+  selfconsumption = deviceCurrentWifi;
+}
+else {
+  selfconsumption = deviceCurrent;
+}
+
+//You can prefill the arrays with 0s
+  for (int i = 0; i < 60; i++) {
+  last60Amps[i] = 0.0;
+  }
+for (int i = 0; i < 72; i++) {
+  historyCapacity[i] = 0.0;
+}
+  for (int i = 0; i < 12; i++) {
+      hourlyKWh[i] = 0.000;
+  }
+
+}
+
+
+void initializeSSID() {
+  preferences.begin("esp32meter", false);
+  
+  if (!preferences.isKey("ssid")) {
+    randomSeed(esp_random());
+    int suffix = random(100, 1000);
+    snprintf(AP_SSID, sizeof(AP_SSID), "ESP32-Meter-%d", suffix);
+    preferences.putString("ssid", AP_SSID);
+  } else {
+    String storedSSID = preferences.getString("ssid", "ESP32-Meter");
+    storedSSID.toCharArray(AP_SSID, sizeof(AP_SSID));
+  }
+  
+  preferences.end();
+  Serial.println("SSID: " + String(AP_SSID));
+}
+
+
+void initializeHardware() {
+
+Wire.begin();
   //Wire.setClock(400000UL);
   //u8g2.setBusClock(400000UL);
 
   ina226.init();
-  Serial.println("INIT");  // shows the voltage measured
 
   /* Set Number of measurements for shunt and bus voltage which shall be averaged
   * Mode *     * Number of samples *
@@ -319,6 +324,7 @@ preferences.begin("esp32meter", false); // Open or create namespace
   AVERAGE_1024      1024
   */
   ina226.setAverage(AVERAGE_64);  // choose mode and uncomment for change of default
+  ina226.setMeasureMode(CONTINUOUS);
 
   /* Set conversion time in microseconds
      One set of shunt and bus voltage conversion will take: 
@@ -347,15 +353,77 @@ preferences.begin("esp32meter", false); // Open or create namespace
   //ina226.setResistorRange(0.004, 20);   // R004 4 MOhm resistor > 0,0819175 / 0,004 = 20,479375 A max
   ina226.setResistorRange(0.00198, 20);   // R002 2 MOhm resistor > 0,0819175 / 0,002 = 40,95875 A max
   //ina226.setResistorRange(0.00099, 40);   // R001 1 MOhm resistor > 0,0819175 / 0,001 = 81,9175 A max
-
   //ina226.setResistorRange(0.000515,40.0); // 0.0005 > 05m
   ina226.waitUntilConversionCompleted();  //if you comment this line the first data might be zero
+  Serial.println("INA226 sensor initialized successfully");
+
+
+//RTC INIT
+ // if (! rtc.begin()) {
+ //   Serial.println("Couldn't find RTC");
+ //   Serial.flush();
+ //   abort();
+ // }
+
+  rtc.begin();
+
+  if (rtc.lostPower()) {
+    Serial.println("RTC lost power, let's set the time!");
+    // When time needs to be set on a new device, or after a power loss, the
+    // following line sets the RTC to the date & time this sketch was compiled
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    // This line sets the RTC with an explicit date & time, for example to set
+    // January 21, 2014 at 3am you would call:
+    // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
+  }
+
+  // When time needs to be re-set on a previously configured device, the
+  // following line sets the RTC to the date & time this sketch was compiled
+  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  // This line sets the RTC with an explicit date & time, for example to set
+  // January 21, 2014 at 3am you would call:
+  // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
+
+
+DateTime now = rtc.now();
+  Serial.println("RTC initialized successfully");
+
 
 #ifdef OLED
-// READ FROM EEPROM
+//OLED INIT
 
+  u8g2.begin();
+  u8g2.setDisplayRotation(U8G2_R1);
+  //u8g2.setContrast(255);
+
+  if (orientation == 0) {
+      u8g2.setDisplayRotation(U8G2_R1);
+      u8g2.clear();
+    } 
+    else if (orientation == 1) {
+      u8g2.setDisplayRotation(U8G2_R2);
+      u8g2.clear();
+    } 
+    else if (orientation == 2) {
+      u8g2.setDisplayRotation(U8G2_R3);
+      u8g2.clear();
+    }
+    else if (orientation == 3) {
+      u8g2.setDisplayRotation(U8G2_R0);
+      u8g2.clear();
+    } 
+      Serial.println("OLED initialized successfully");
+
+#endif
+
+
+}
+
+void initializeEEPROM() {
+EEPROM.begin(512); // Required for ESP32 (allocate flash space)
+// READ FROM EEPROM
 //SETTINGS
-Serial.println("Getting COFIG:"); 
+Serial.println("Getting config from EEPROM:"); 
 
        batteryType = EEPROM.read(typeAddress); //batteryType
 
@@ -385,7 +453,6 @@ if (isnan(batteryCapacityAh) || batteryCapacityAh < 0 || batteryCapacityAh > 100
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
 }
 
- 
 
 wifiEnabled = EEPROM.read(wifi_Address); //WiFimode 0/1
       if (wifiEnabled > 1) {
@@ -399,19 +466,19 @@ if (screen > 2){ screen = 0; }
 orientation = EEPROM.read(orientation_Address);
 if (orientation > 3){ orientation = 0; }
 
-Serial.print("batteryType "); 
+Serial.print("batteryType: "); 
 Serial.println(batteryType); 
-Serial.print("cellcount "); 
+Serial.print("cellcount: "); 
 Serial.println(cellcount); 
-Serial.print("batteryCapacityAh "); 
+Serial.print("batteryCapacityAh: "); 
 Serial.println(batteryCapacityAh); 
-Serial.print("pricePerKWh "); 
+Serial.print("pricePerKWh: "); 
 Serial.println(pricePerKWh); 
-Serial.print("wifiEnabled "); 
+Serial.print("wifiEnabled: "); 
 Serial.println(wifiEnabled); 
-Serial.print("orientation "); 
+Serial.print("orientation: "); 
 Serial.println(orientation); 
-Serial.print("screen "); 
+Serial.print("screen: "); 
 Serial.println(screen); 
 
 
@@ -437,10 +504,10 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
   EEPROM.commit();
 }
 
-  Serial.println("Getting STATS:"); 
-  Serial.print("remainingCapacityAh ");
+  Serial.println("Getting stats from EEPROM:"); 
+  Serial.print("remainingCapacityAh: ");
   Serial.println(remainingCapacityAh); 
-  Serial.print("totalKWh ");
+  Serial.print("totalKWh: ");
   Serial.println(totalKWh); 
     
 
@@ -451,111 +518,51 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
 
   totalWh = totalKWh * 1000.0;
   totalPrice = totalKWh * pricePerKWh;
+}
 
-#endif
-
-//RTC INIT
- 
- // if (! rtc.begin()) {
- //   Serial.println("Couldn't find RTC");
- //   Serial.flush();
- //   abort();
- // }
-
-  rtc.begin();
-
-  if (rtc.lostPower()) {
-    Serial.println("RTC lost power, let's set the time!");
-    // When time needs to be set on a new device, or after a power loss, the
-    // following line sets the RTC to the date & time this sketch was compiled
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    // This line sets the RTC with an explicit date & time, for example to set
-    // January 21, 2014 at 3am you would call:
-    // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
-  }
-
-  // When time needs to be re-set on a previously configured device, the
-  // following line sets the RTC to the date & time this sketch was compiled
-  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  // This line sets the RTC with an explicit date & time, for example to set
-  // January 21, 2014 at 3am you would call:
-  // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
-
-
-DateTime now = rtc.now();
-
-
-#ifdef OLED
-//OLED INIT
-
-  u8g2.begin();
-  u8g2.setDisplayRotation(U8G2_R1);
-  //u8g2.setContrast(255);
-
-  if (orientation == 0) {
-      u8g2.setDisplayRotation(U8G2_R1);
-      u8g2.clear();
-    } 
-    else if (orientation == 1) {
-      u8g2.setDisplayRotation(U8G2_R2);
-      u8g2.clear();
-    } 
-    else if (orientation == 2) {
-      u8g2.setDisplayRotation(U8G2_R3);
-      u8g2.clear();
-    }
-    else if (orientation == 3) {
-      u8g2.setDisplayRotation(U8G2_R0);
-      u8g2.clear();
-    } 
-#endif
-
-
-///SERVER INIT
-// Initialize LittleFS
-  if (!LittleFS.begin(true)) {
-    Serial.println("Failed to mount LittleFS");
-    return;
-  }
-  Serial.println("LittleFS mounted successfully.");
-
-
-
-if (wifiEnabled == 1) {
-
-#ifdef AP
-  // Access Point Mode
-  WiFi.mode(WIFI_AP);
+void initializeWiFi() {
+  WiFi.mode(WIFI_AP_STA);
+  
+  // Start Access Point
   WiFi.softAP(AP_SSID, AP_PASSWORD);
-  delay(100);
-  Serial.println("Access Point started");
-  Serial.println("IP Address: " + WiFi.softAPIP().toString());
-#else
-  // Station Mode - connect to existing Wi-Fi
-  WiFi.mode(WIFI_STA);
+  Serial.println("Access Point: " + String(AP_SSID));
+  Serial.println("AP IP: " + WiFi.softAPIP().toString());
+  
+  // Try to connect to WiFi
   WiFi.begin(ssid, password);
-  Serial.print("Connecting to Wi-Fi");
+  Serial.print("Connecting to WiFi");
+  
   int retry = 0;
   while (WiFi.status() != WL_CONNECTED && retry < 20) {
     delay(500);
     Serial.print(".");
     retry++;
   }
-
+  
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi connected.");
-    Serial.println("IP Address: " + WiFi.localIP().toString());
+    Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
   } else {
-    Serial.println("\nFailed to connect to WiFi.");
+    Serial.println("\nWiFi connection failed - AP mode only");
+  }
+}
+
+
+#ifdef MQTT
+void initializeMQTT() {
+  client.setServer(mqtt_server, mqtt_port);
+  client.setKeepAlive(60);
+  client.setBufferSize(512); // Increase buffer size for larger messages
+}
+#endif
+
+void initializeWebServer() {
+///SERVER INIT
+// Initialize LittleFS
+  if (!LittleFS.begin(true)) {
+    Serial.println("Failed to mount LittleFS");
     return;
   }
-
-  #ifdef MQTT
-  // MQTT
-  client.setServer(mqtt_server, mqtt_port);
-  #endif
-
-#endif
+  Serial.println("LittleFS mounted successfully");
 
   // Serve static files from LittleFS
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
@@ -644,28 +651,8 @@ if (wifiEnabled == 1) {
   });
 
   server.begin();
-
   selfconsumption = deviceCurrentWifi;
-
-}
-else {
-  selfconsumption = deviceCurrent;
-}
-
-
-//ENERGY TRACKING
-
-//You can prefill the arrays with 0s
-  for (int i = 0; i < 60; i++) {
-  last60Amps[i] = 0.0;
-  }
-for (int i = 0; i < 72; i++) {
-  historyCapacity[i] = 0.0;
-}
-  for (int i = 0; i < 12; i++) {
-      hourlyKWh[i] = 0.000;
-  }
-
+  Serial.println("Webserver started");
 }
 
 
@@ -687,10 +674,9 @@ void disableWiFiServer() {
   EEPROM.put(wifi_Address, wifiEnabled);  // total Wh produced
   //save wifi state
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
-
   delay(500);
-  //Serial.println("Restarting...");
 }
+
 
 float estimateCapacity(float voltage, const float* volts, const float* caps, int size) {
   if (voltage >= volts[0]) return 100.0;
@@ -713,7 +699,6 @@ void updateTime() {
   now = rtc.now();
   nowSecs = now.unixtime();
   newHour = now.hour();  // Track current hour for hourly logging
-
 }
 
 void sensorread() {
@@ -873,60 +858,157 @@ if (nowSecs != lastEnergySecond) {
   accumulatedWh = 0;  // Reset for next hour
   }
   
+
+  #ifdef MQTT
+  // Real sensor data
+  sensorData.voltage = voltage;
+  sensorData.Ampere = abs(Ampere);
+  sensorData.watts = watts;
+  sensorData.capacity = capacity;
+  
+  // Apply your logic
+  sensorData.soc = sensorData.capacity;
+  sensorData.charging_watts = (cur_dir == 2) ? sensorData.watts : 0;
+  sensorData.discharging_watts = (cur_dir == 1) ? sensorData.watts : 0;
+  sensorData.battery_voltage = sensorData.voltage;
+  sensorData.battery_current = (cur_dir == 1) ? -sensorData.Ampere : sensorData.Ampere;
+  #endif
+
 }
 
 #ifdef MQTT
-
-unsigned long lastMqttAttempt = 0;
-const unsigned long mqttRetryInterval = 5000;  // 5 seconds
+void handleMQTT() {
+  checkMQTTConnection();
+  if (client.connected()) {
+    publishSensorData();
+  }
+}
 
 void checkMQTTConnection() {
   if (!client.connected()) {
     unsigned long now = millis();
     if (now - lastMqttAttempt > mqttRetryInterval) {
       lastMqttAttempt = now;
-      Serial.println("Attempting MQTT connection...");
-
-      if (client.connect("PowerMeter", mqtt_user, mqtt_pass)) {
-        Serial.println("MQTT connected");
-
-        publishAllDiscovery(); // <-- Send discovery info
-
-        // client.subscribe("your/topic");  // If needed
+      
+      String clientId = "PowerMeter-" + WiFi.macAddress();
+      
+      Serial.print("Attempting MQTT connection to ");
+      Serial.print(mqtt_server);
+      Serial.print(":");
+      Serial.println(mqtt_port);
+      
+      if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+        Serial.println("MQTT connected successfully!");
+        Serial.println("Publishing discovery messages...");
+        publishDiscoveryMessages();
+        Serial.println("Discovery messages sent!");
       } else {
         Serial.print("MQTT failed, rc=");
         Serial.print(client.state());
-        Serial.println(" retrying in 5 seconds");
+        Serial.println(" - retrying in 5 seconds");
       }
     }
   } else {
-    client.loop();  // Keep MQTT connection alive
+    client.loop();
   }
 }
 
-void publishToMQTT() {
-  if (!client.connected()) {
-   client.connect("PowerMeter", mqtt_user, mqtt_pass);
+void publishSensorData() {
+  String baseTopic = "powermeter/" + WiFi.macAddress();
+  
+  // Publish the 5 required sensor values 
+  client.publish((baseTopic + "/capacity").c_str(), 
+                 String(sensorData.soc, 1).c_str(), true);
+  client.publish((baseTopic + "/voltage").c_str(), 
+                 String(sensorData.battery_voltage, 2).c_str(), true);
+  client.publish((baseTopic + "/charging_watts").c_str(), 
+                 String(sensorData.charging_watts, 1).c_str(), true);
+  client.publish((baseTopic + "/discharging_watts").c_str(), 
+                 String(sensorData.discharging_watts, 1).c_str(), true);
+  client.publish((baseTopic + "/battery_current").c_str(), 
+                 String(sensorData.battery_current, 3).c_str(), true);
+  
+  // Publish status
+  client.publish((baseTopic + "/status").c_str(), "online", true);
+  
+  // Debug output every 10 seconds
+  static unsigned long lastDebug = 0;
+  if (millis() - lastDebug > 10000) {
+    lastDebug = millis();
+    Serial.println("Published MQTT sensor data");
+   // Serial.println("  Capacity: " + String(sensorData.soc, 1) + "%");
+   // Serial.println("  Voltage: " + String(sensorData.battery_voltage, 2) + "V");
+   // Serial.println("  Charging: " + String(sensorData.charging_watts, 1) + "W");
+   // Serial.println("  Discharging: " + String(sensorData.discharging_watts, 1) + "W");
+   // Serial.println("  Current: " + String(sensorData.battery_current, 3) + "A");
   }
-
-  client.loop(); // process incoming messages
-
-  // Prepare metrics
-  float soc = capacity; // in %
-  float charging_watts = (cur_dir == 2) ? watts : 0;
-  float discharging_watts = (cur_dir == 1) ? watts : 0;
-  float battery_voltage = voltage;                // Bus voltage (V)
-  float battery_current = (cur_dir == 1) ? -Ampere : Ampere; // Negative if discharging
-
-
-  // Publish
-client.publish("power_meter/state_of_charge", String(capacity, 1).c_str(), true);
-client.publish("power_meter/voltage", String(voltage, 2).c_str(), true);
-client.publish("power_meter/current", String(Ampere, 2).c_str(), true);
-client.publish("power_meter/charge_power", String((cur_dir == 2) ? watts : 0, 1).c_str(), true);
-client.publish("power_meter/discharge_power", String((cur_dir == 1) ? watts : 0, 1).c_str(), true);
-
 }
+
+void publishDiscoveryMessages() {
+  String deviceId = WiFi.macAddress();
+  deviceId.replace(":", ""); // Remove colons for clean topic names
+  String baseTopic = "powermeter/" + WiFi.macAddress();
+  
+  Serial.println("Device ID: " + deviceId);
+  Serial.println("Base Topic: " + baseTopic);
+  Serial.println("Publishing simplified MQTT discovery messages...");
+  
+  // Use empty device info since we're including it directly
+  String deviceInfo = "";
+  
+  // Capacity sensor (%)
+  publishDiscoveryEntity("capacity", "%", "battery", "mdi:battery", deviceInfo, baseTopic);
+  
+  // Voltage sensor (V)
+  publishDiscoveryEntity("voltage", "V", "voltage", "mdi:flash", deviceInfo, baseTopic);
+  
+  // Charging watts (W)
+  publishDiscoveryEntity("charging_watts", "W", "power", "mdi:battery-charging", deviceInfo, baseTopic);
+  
+  // Discharging watts (W)
+  publishDiscoveryEntity("discharging_watts", "W", "power", "mdi:battery-minus", deviceInfo, baseTopic);
+  
+  // Battery current (A)
+  publishDiscoveryEntity("battery_current", "A", "current", "mdi:current-dc", deviceInfo, baseTopic);
+}
+
+void publishDiscoveryEntity(const char* name, const char* unit, const char* deviceClass, 
+                           const char* icon, const String& deviceInfo, const String& baseTopic) {
+  String deviceId = WiFi.macAddress();
+  deviceId.replace(":", ""); // Remove colons from MAC address
+  String discoveryTopic = "homeassistant/sensor/" + deviceId + "_" + name + "/config";
+  
+  // Simplified payload - shorter JSON
+  String payload = "{";
+  payload += "\"name\":\"" + String(name) + "\",";
+  payload += "\"stat_t\":\"" + baseTopic + "/" + name + "\",";
+  payload += "\"unit_of_meas\":\"" + String(unit) + "\",";
+  payload += "\"dev_cla\":\"" + String(deviceClass) + "\",";
+  payload += "\"ic\":\"" + String(icon) + "\",";
+  payload += "\"stat_cla\":\"measurement\",";
+  payload += "\"uniq_id\":\"" + deviceId + "_" + name + "\",";
+  payload += "\"dev\":{";
+  payload += "\"ids\":[\"" + deviceId + "\"],";
+  payload += "\"mf\":\"skaman82\",";
+  payload += "\"mdl\":\"ESP PowerMeter\",";
+  payload += "\"name\":\"" + String(AP_SSID) + "\"";
+  payload += "}}";
+  
+  Serial.println("Topic: " + discoveryTopic);
+  Serial.println("Payload length: " + String(payload.length()));
+  Serial.println("Payload: " + payload);
+  
+  bool result = client.publish(discoveryTopic.c_str(), payload.c_str(), true);
+  Serial.println("Result: " + String(result ? "SUCCESS" : "FAILED"));
+  
+  if (!result) {
+    Serial.println("Publish failed - payload too large or connection issue");
+  }
+  
+  delay(200); // Longer delay between publications
+}
+
+
 #endif
 
 
@@ -1271,16 +1353,13 @@ else if (menu == 4) { // CHAR MOD MENU TIME
   }
 }
  if (pressedbt != 0) {
-    Serial.print("Pressed button value: ");
-    Serial.println(pressedbt);
+    //Serial.print("Pressed button value: ");
+    //Serial.println(pressedbt);
+    
     // Reset after sending
     pressedbt = 0;
   }
 
-  //Serial.print("menustep: ");
-  //Serial.println(menustep);
-  //Serial.print("menu: ");
-  //Serial.println(menu);
 }
 
 void draw() {
@@ -1690,14 +1769,14 @@ else {
     u8g2.print("SSID ");
     u8g2.print(AP_SSID);
     u8g2.setCursor(5, 124);
-    #ifdef AP
-    u8g2.print("IP 192.168.4.1");
-    #endif
-    #ifndef AP
     u8g2.print("IP ");
+    if (WiFi.status() == WL_CONNECTED) {
     u8g2.print(WiFi.localIP());
-
-    #endif
+    }
+    else {
+      u8g2.print("192.168.4.1");
+    }
+    
 }
 
 
@@ -1872,16 +1951,18 @@ void loop() {
   lastSensorMillis = millis();
   updateTime();    // Update RTC time every second
   sensorread();    // Also call your sensor reading logic
+
   #ifdef MQTT
-  checkMQTTConnection();
-  publishToMQTT();
+ // Handle MQTT - now works in both AP and Station mode
+    if (WiFi.status() == WL_CONNECTED) {
+    handleMQTT();  // no MQTT in AP-Mode
+    }
   #endif
   }
-  #ifdef OLED
-  buttoncheck();
-  #endif
 
   #ifdef OLED
+  buttoncheck();
+
   if (menu == 0) {
   draw();
   }

@@ -4,7 +4,7 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <time.h>
-#include <Preferences.h>  // Include this at the top
+#include <Preferences.h>  
 Preferences preferences;  // Declare this globallychar AP_SSID[32];
 #include <INA226_WE.h>
 #include <Arduino.h>
@@ -13,16 +13,13 @@ Preferences preferences;  // Declare this globallychar AP_SSID[32];
 #include <esp_system.h>
 
 
-
 //CONFIG START >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
-#define AP    // USES Accespoint Mode instead of joining a preset Network
-#define OLED  // OLED Display 
-#define MQTT  // USE AS SENSOR IN Home Assistant - doesn't work in AP Mode
+#define OLED  // Enable OLED Display 
+#define MQTT  // Enable MQTT for Home Assistant
+#define WEBSERVER    // Enable Web UI
 
-#ifdef AP
-#undef MQTT
-#endif
+
 
 //Device Settings START (No need to configure when using an OLED screen and buttons)
 float deviceCurrent = 0.017;      // 17 mA in normal mode
@@ -46,12 +43,14 @@ float pricePerKWh = 0.305;         // 30.5 cents per kWh
 U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 #endif
 
-const char* ssid = "airport";
-const char* password = "xxx";
+// ===== NETWORK CONFIGURATION =====
+const char* WIFI_SSID = "airport";
+const char* WIFI_PASSWORD = "babylon5";
 const char* AP_PASSWORD = "12345678";
 
 #ifdef MQTT
 #include <PubSubClient.h>
+//const char* mqtt_server = "192.168.4.2";  // Your Mac's IP in AP network
 const char* mqtt_server = "homeassistant.local";  // or IP of HA
 const int mqtt_port = 1883;
 const char* mqtt_user = "mqtt_user";
@@ -78,6 +77,9 @@ float remainingCapacityAh = 0;
 int remainingCapacitymAh = 0;
 unsigned long previousMillis = 0;
 const unsigned long interval = 500;  // Interval (500 ms)
+const unsigned long sensorInterval = 1000;
+unsigned long lastMqttAttempt = 0;
+const unsigned long mqttRetryInterval = 5000;
 
 const unsigned long longPressTime = 500; // milliseconds
 bool button1State = false;
@@ -183,6 +185,23 @@ const float lifepo4Capacity[lifepo4Points] = {100,   95,   90,   80,   60,   40,
 
 INA226_WE ina226 = INA226_WE(I2C_ADDRESS);
 
+// Sensor data structure
+struct SensorData {
+  float voltage = 0.0;
+  float capacity = 0.0;
+  float Ampere = 0.0;
+  int watts = 0;
+  byte cur_dir = 0; // 0 = idle, 1 = discharging, 2 = charging
+  
+  // Calculated values based on your logic
+  float soc = 0.0;
+  float charging_watts = 0.0;
+  float discharging_watts = 0.0;
+  float battery_voltage = 0.0;
+  float battery_current = 0.0;
+};
+
+SensorData sensorData;
 
 // Helper to convert __TIME__ (e.g. "14:33:12") to a unique number
 int getCompileTimeSeed() {
@@ -198,6 +217,19 @@ int getCompileTimeSeed() {
 }
 
 
+
+#ifdef MQTT
+/**
+ * Initialize MQTT client for Home Assistant integration
+ * Sets up connection parameters and buffer sizes
+ */
+void initializeMQTT() {
+  client.setServer(mqtt_server, mqtt_port);
+  client.setKeepAlive(60);
+  client.setBufferSize(512); // Increase buffer size for larger messages
+  Serial.println("MQTT client initialized");
+}
+#endif
 
 void setup() {
 
@@ -415,40 +447,35 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
 
 if (wifiEnabled == 1) {
 
-#ifdef AP
-  // Access Point Mode
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(AP_SSID, AP_PASSWORD);
-  delay(100);
-  Serial.println("Access Point started");
-  Serial.println("IP Address: " + WiFi.softAPIP().toString());
-#else
-  // Station Mode - connect to existing Wi-Fi
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to Wi-Fi");
-  int retry = 0;
-  while (WiFi.status() != WL_CONNECTED && retry < 20) {
-    delay(500);
-    Serial.print(".");
-    retry++;
-  }
+WiFi.mode(WIFI_AP_STA);
+    
+    // Start Access Point
+    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    Serial.println("Access Point: " + String(AP_SSID));
+    Serial.println("AP IP: " + WiFi.softAPIP().toString());
+    
+    // Try to connect to existing WiFi
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.print("Connecting to WiFi");
+    
+    int retry = 0;
+    while (WiFi.status() != WL_CONNECTED && retry < 20) {
+        delay(500);
+        Serial.print(".");
+        retry++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
+    } else {
+        Serial.println("\nWiFi connection failed - AP mode only");
+    }
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi connected.");
-    Serial.println("IP Address: " + WiFi.localIP().toString());
-  } else {
-    Serial.println("\nFailed to connect to WiFi.");
-    return;
-  }
-
-  #ifdef MQTT
-  // MQTT
-  client.setServer(mqtt_server, mqtt_port);
-  #endif
-
+#ifdef MQTT
+  initializeMQTT();
 #endif
 
+#ifdef WEBSERVER
   // Serve static files from LittleFS
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 
@@ -535,8 +562,9 @@ if (wifiEnabled == 1) {
   });
 
   server.begin();
-
+  #endif
   selfconsumption = deviceCurrentWifi;
+  
 
 }
 else {
@@ -776,57 +804,158 @@ if (millis() - lastCapacityMinuteMillis >= 600000UL) {  // 10 min
   historyVoltage[71] = voltage;  // Store the bus voltage
 }
 
+
+#ifdef MQTT
+  // Real sensor data
+  sensorData.voltage = voltage;
+  sensorData.Ampere = abs(Ampere);
+  sensorData.watts = watts;
+  sensorData.capacity = capacity;
+  
+  // Apply your logic
+  sensorData.soc = sensorData.capacity;
+  sensorData.charging_watts = (cur_dir == 2) ? sensorData.watts : 0;
+  sensorData.discharging_watts = (cur_dir == 1) ? sensorData.watts : 0;
+  sensorData.battery_voltage = sensorData.voltage;
+  sensorData.battery_current = (cur_dir == 1) ? -sensorData.Ampere : sensorData.Ampere;
+  #endif
+
 }
 
 
 #ifdef MQTT
-
-unsigned long lastMqttAttempt = 0;
-const unsigned long mqttRetryInterval = 5000;  // 5 seconds
+void handleMQTT() {
+  checkMQTTConnection();
+  
+  if (client.connected()) {
+    publishSensorData();
+  }
+}
 
 void checkMQTTConnection() {
   if (!client.connected()) {
     unsigned long now = millis();
     if (now - lastMqttAttempt > mqttRetryInterval) {
       lastMqttAttempt = now;
-      Serial.println("Attempting MQTT connection...");
-
-      if (client.connect("PowerMeter", mqtt_user, mqtt_pass)) {
-        Serial.println("MQTT connected");
-        // client.subscribe("your/topic");  // If needed
+      
+      String clientId = "PowerMeter-" + WiFi.macAddress();
+      
+      Serial.print("Attempting MQTT connection to ");
+      Serial.print(mqtt_server);
+      Serial.print(":");
+      Serial.println(mqtt_port);
+      
+      if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+        Serial.println("MQTT connected successfully!");
+        Serial.println("Publishing discovery messages...");
+        publishDiscoveryMessages();
+        Serial.println("Discovery messages sent!");
       } else {
         Serial.print("MQTT failed, rc=");
         Serial.print(client.state());
-        Serial.println(" retrying in 5 seconds");
+        Serial.println(" - retrying in 5 seconds");
       }
     }
   } else {
-    client.loop();  // Keep MQTT connection alive
+    client.loop();
   }
 }
 
-void publishToMQTT() {
-  if (!client.connected()) {
-   client.connect("PowerMeter", mqtt_user, mqtt_pass);
+void publishSensorData() {
+  String baseTopic = "powermeter/" + WiFi.macAddress();
+  
+  // Publish the 5 required sensor values using your logic
+  client.publish((baseTopic + "/capacity").c_str(), 
+                 String(sensorData.soc, 1).c_str(), true);
+  client.publish((baseTopic + "/voltage").c_str(), 
+                 String(sensorData.battery_voltage, 2).c_str(), true);
+  client.publish((baseTopic + "/charging_watts").c_str(), 
+                 String(sensorData.charging_watts, 1).c_str(), true);
+  client.publish((baseTopic + "/discharging_watts").c_str(), 
+                 String(sensorData.discharging_watts, 1).c_str(), true);
+  client.publish((baseTopic + "/battery_current").c_str(), 
+                 String(sensorData.battery_current, 3).c_str(), true);
+  
+  // Publish status
+  client.publish((baseTopic + "/status").c_str(), "online", true);
+  
+  // Debug output every 10 seconds
+  static unsigned long lastDebug = 0;
+  if (millis() - lastDebug > 10000) {
+    lastDebug = millis();
+    Serial.println("Published MQTT sensor data");
+   // Serial.println("  Capacity: " + String(sensorData.soc, 1) + "%");
+   // Serial.println("  Voltage: " + String(sensorData.battery_voltage, 2) + "V");
+   // Serial.println("  Charging: " + String(sensorData.charging_watts, 1) + "W");
+   // Serial.println("  Discharging: " + String(sensorData.discharging_watts, 1) + "W");
+   // Serial.println("  Current: " + String(sensorData.battery_current, 3) + "A");
   }
-
-  client.loop(); // process incoming messages
-
-  // Prepare metrics
-  float soc = capacity; // in %
-  float charging_watts = (cur_dir == 2) ? watts : 0;
-  float discharging_watts = (cur_dir == 1) ? watts : 0;
-  float battery_voltage = voltage;                // Bus voltage (V)
-  float battery_current = (cur_dir == 1) ? -Ampere : Ampere; // Negative if discharging
-
-
-  // Publish
-  client.publish("power_meter/state_of_charge", String(soc, 1).c_str(), true);
-  client.publish("power_meter/charge_power", String(charging_watts, 1).c_str(), true);
-  client.publish("power_meter/discharge_power", String(discharging_watts, 1).c_str(), true);
-  client.publish("power_meter/voltage", String(battery_voltage, 2).c_str(), true);
-  client.publish("power_meter/current", String(battery_current, 3).c_str(), true);
 }
+
+void publishDiscoveryMessages() {
+  String deviceId = WiFi.macAddress();
+  deviceId.replace(":", ""); // Remove colons for clean topic names
+  String baseTopic = "powermeter/" + WiFi.macAddress();
+  
+  Serial.println("Device ID: " + deviceId);
+  Serial.println("Base Topic: " + baseTopic);
+  Serial.println("Publishing simplified MQTT discovery messages...");
+  
+  // Use empty device info since we're including it directly
+  String deviceInfo = "";
+  
+  // Capacity sensor (%)
+  publishDiscoveryEntity("capacity", "%", "battery", "mdi:battery", deviceInfo, baseTopic);
+  
+  // Voltage sensor (V)
+  publishDiscoveryEntity("voltage", "V", "voltage", "mdi:flash", deviceInfo, baseTopic);
+  
+  // Charging watts (W)
+  publishDiscoveryEntity("charging_watts", "W", "power", "mdi:battery-charging", deviceInfo, baseTopic);
+  
+  // Discharging watts (W)
+  publishDiscoveryEntity("discharging_watts", "W", "power", "mdi:battery-minus", deviceInfo, baseTopic);
+  
+  // Battery current (A)
+  publishDiscoveryEntity("battery_current", "A", "current", "mdi:current-dc", deviceInfo, baseTopic);
+}
+
+void publishDiscoveryEntity(const char* name, const char* unit, const char* deviceClass, 
+                           const char* icon, const String& deviceInfo, const String& baseTopic) {
+  String deviceId = WiFi.macAddress();
+  deviceId.replace(":", ""); // Remove colons from MAC address
+  String discoveryTopic = "homeassistant/sensor/" + deviceId + "_" + name + "/config";
+  
+  // Simplified payload - shorter JSON
+  String payload = "{";
+  payload += "\"name\":\"" + String(name) + "\",";
+  payload += "\"stat_t\":\"" + baseTopic + "/" + name + "\",";
+  payload += "\"unit_of_meas\":\"" + String(unit) + "\",";
+  payload += "\"dev_cla\":\"" + String(deviceClass) + "\",";
+  payload += "\"ic\":\"" + String(icon) + "\",";
+  payload += "\"stat_cla\":\"measurement\",";
+  payload += "\"uniq_id\":\"" + deviceId + "_" + name + "\",";
+  payload += "\"dev\":{";
+  payload += "\"ids\":[\"" + deviceId + "\"],";
+  payload += "\"mf\":\"skaman82\",";
+  payload += "\"mdl\":\"ESP PowerMeter\",";
+  payload += "\"name\":\"" + String(AP_SSID) + "\"";
+  payload += "}}";
+  
+  Serial.println("Topic: " + discoveryTopic);
+  Serial.println("Payload length: " + String(payload.length()));
+  Serial.println("Payload: " + payload);
+  
+  bool result = client.publish(discoveryTopic.c_str(), payload.c_str(), true);
+  Serial.println("Result: " + String(result ? "SUCCESS" : "FAILED"));
+  
+  if (!result) {
+    Serial.println("Publish failed - payload too large or connection issue");
+  }
+  
+  delay(200); // Longer delay between publications
+}
+
 #endif
 
 
@@ -940,7 +1069,7 @@ else if (menu == 1) {
    if (pressedbt == 2) { //NAVIGATE MENU 
     menustep = menustep +1; 
     //set constrains
-    if (menustep > 9) {
+    if (menustep > 8) {
       menustep = 0;
     }
     }
@@ -1125,16 +1254,11 @@ else if (menu == 3) { // CHAR MOD MENU PRICE
     
 }
  if (pressedbt != 0) {
-    Serial.print("Pressed button value: ");
-    Serial.println(pressedbt);
+    //Serial.print("Pressed button value: ");
+    //Serial.println(pressedbt);
     // Reset after sending
     pressedbt = 0;
   }
-
-  //Serial.print("menustep: ");
-  //Serial.println(menustep);
-  //Serial.print("menu: ");
-  //Serial.println(menu);
 }
 
 void draw() {
@@ -1537,13 +1661,13 @@ else {
     u8g2.print("SSID ");
     u8g2.print(AP_SSID);
     u8g2.setCursor(5, 124);
-    #ifdef AP
-    u8g2.print("IP 192.168.4.1");
-    #endif
-    #ifndef AP
-    u8g2.print("IP ");
-    u8g2.print(WiFi.localIP());
-
+    if (WiFi.status() == WL_CONNECTED) {
+      u8g2.print(WiFi.localIP());
+    } else {
+      u8g2.print("192.168.4.1");
+    }
+    #ifdef MQTT
+    u8g2.print(" MQTT:ON");
     #endif
 }
 
@@ -1660,13 +1784,19 @@ void loop() {
   
   sensorread();
 
-  #ifdef MQTT
-  if (millis() - lastSensorMillis >= 1000) {
-  lastSensorMillis = millis();
-  checkMQTTConnection();
-  publishToMQTT();
-   }
+   if (millis() - lastSensorMillis >= sensorInterval) {
+    lastSensorMillis = millis();
+
+    #ifdef MQTT
+    // Handle MQTT - now works in both AP and Station mode
+    if (WiFi.status() == WL_CONNECTED) {
+    handleMQTT();  // no MQTT in AP-Mode
+    }
   #endif
+   
+  }
+
+  
   #ifdef OLED
   buttoncheck();
   #endif
