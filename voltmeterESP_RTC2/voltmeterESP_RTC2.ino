@@ -28,7 +28,7 @@
 #include "RTClib.h"
 
 // ===== FEATURE TOGGLES =====
-//#define OLED                  // Enable OLED Display 
+#define OLED                  // Enable OLED Display 
 #define MQTT                  // Enable MQTT for Home Assistant
 #define WEBSERVER             // Enable Web UI
 
@@ -47,7 +47,7 @@ struct DeviceConfig {
 
 // ===== NETWORK CONFIGURATION =====
 const char* WIFI_SSID = "airport";
-const char* WIFI_PASSWORD = "babylon5";
+const char* WIFI_PASSWORD = "xxx";
 const char* AP_PASSWORD = "12345678";
 
 // ===== GLOBAL VARIABLES =====
@@ -661,7 +661,10 @@ void updateSensorData() {
     unsigned long currentMicros = micros();
     if (currentMicros - timing.previousMicros >= timing.INTERVAL_MICROS) {
         timing.previousMicros = currentMicros;
-        
+
+         // Small deadband for milli-amp readings
+        if (abs(mAmpere) <= 4) mAmpere = 0;
+
         // Calculate energy consumption/production
         float realCurrent = sensorData.current + sensorData.selfConsumption;
         float usedmAh = (realCurrent * 1000.0f) / 3600.0f; // mAh per second
@@ -986,7 +989,7 @@ void handleMainScreenInput() {
  */
 void handleMenuScreenInput() {
     if (ui.pressedButton == 2) { // Navigate menu
-        ui.menustep = (ui.menustep + 1) % 10;
+        ui.menustep = (ui.menustep + 1) % 10; //10 menu items
     } else if (ui.pressedButton == 1) { // Select menu item
         handleMenuSelection();
     }

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link href="favicon.ico" rel="icon" type="image/x-icon">
+  <title>ESP-Meter</title>
+  <link rel="stylesheet" href="style_min.css">
+  <script src="chart.umd.js"></script>
+
+</head>
+<body>
+  <div class="wrapper">
+  <div class="slider-controls">
+    <button onclick="setSlide(0, true)" class="active">Battery</button>
+    <button onclick="setSlide(1, true)">Solar</button>
+    <button onclick="setSlide(3, true)">Power</button>
+
+
+  </div>
+
+
+  <div class="slider-container">
+    <div id="slider" class="slider-track">
+      <div class="slide battery">
+  <!-- Battery related Data in here… -->
+       <div class="object">
+
+        <div class="half">
+          <span class="direction"></span>
+          <p><label>Voltage</label><br><strong><span class="voltage">0</span></strong> V</p>
+          <p><label>Remaining Capacity</label><br><strong><span id="remainingCapacityAh">0</span></strong> Ah</p>
+
+          
+        </div>
+        <div class="half">
+            <!-- Pie Chart -->
+   <div id="donutChartContainer">
+    <div id="donutChart"></div>
+    <div id="donutCenter"><span id="capacity">0</span>%</div>
+  </div>
+        </div>
+        
+      
+      </div>
+
+      <div class="object secondary">
+        <div class="row">
+        <div class="half">  
+          <icon class="ch"></icon>
+            <label>Charge/<br>
+              Discharge</label><br>
+            <strong><span class="ampere">0</span></strong>  A
+            <label class="pill"><span class="watts">0</span> W</label>
+          
+        </div>
+        <div class="half">
+          <icon class="ch2"></icon>
+            <label>Transferred<br>
+              mAh/Ah </label><br>
+          <strong> <span class="usedAh">0</span></strong> <span class="usedAh_label">mAh</span> 
+
+        </div>
+      </div>
+      <div class="row battery">
+      <p class="timeline"><strong id="timeLabel">Time:</strong> <span id="hours"></span><span id="minutes"></span></p>
+    </div>
+
+      </div>
+
+
+
+      <div class="chartcontainer">
+        <div class="charttitle">
+        <icon class="graph"></icon>
+        12h History (V)<br>
+        <span>Updates every 10min</span>
+      </div>
+      <canvas id="voltageChart" width="400" height="200"></canvas>
+      <div class="chart-tooltip"></div>
+
+          </div>
+
+
+  <div class="chartcontainer">
+    <div class="charttitle">
+    <icon class="graph"></icon>
+    12h History (%)<br>
+    <span>Updates every 10min</span>
+  </div>
+    <canvas id="capacityChart" width="400" height="200"></canvas>
+    <div class="chart-tooltip"></div>
+
+  </div>
+
+ 
+
+  <!-- Accordion -->
+          <div class="accordion"> <icon class="batico"></icon>Battery Information<span></span></div>
+          <div class="panel">
+            <p>Battery Type: <span id="batteryType"></span></p>
+            <p>Cell Count: <span id="cellcount"></span>S</p>
+            <p>Battery Capacity: <span id="batteryCapacityAh"></span>Ah</p>
+            <info>Battery type and max capatity can be set in the device settings.</info>
+          </div>
+      </div>
+
+      <div class="slide solar">
+
+
+  <!-- Solar related Data in here -->
+  <div class="object">
+    <div class="half">
+      <label>Solar Power</label>
+      <br><span class="solar watts">0</span> W<br>
+      <label class="pill main">Peak <span class="maxWatts" class="watts">0</span></label>
+      <div class="row">
+      <span class="voltage small">0</span> V &nbsp;&nbsp; <span class="ampere small">0</span> A
+    </div>
+    </div>
+    <div class="half flexcenter">
+      <span class="direction"></span>
+    </div>
+
+
+</div>
+  <div class="object secondary solar">
+    <div class="row">
+    <div class="half">  
+      <p><icon class="ch"></icon>
+        <label>Total Energy<br>
+          produced</label><br>
+        <strong><span id="totalWh">0</span></strong> <label id="totalWhValue">Wh</label>
+        
+      </p>
+    </div>
+    <div class="half">
+      <p><icon class="cost"></icon>
+        <label>Total Energy<br>
+          Cost </label><br>
+      <strong> <span id="totalPrice">0</span></strong> €</p>
+
+    </div>
+  </div>
+
+
+  </div>
+
+
+
+<div class="chartcontainer">
+  <div class="charttitle">
+    <icon class="graph"></icon>
+    12h History (Wh)<br>
+    <span>Updates every hour</span>
+  <div class="sum">
+    <span id="hourlyKWhTotal">0</span> kWh
+
+  </div>
+  </div>
+
+  <canvas id="myChart" width="400" height="200"></canvas>
+  <div class="chart-tooltip"></div>
+
+
+</div>
+
+<!-- Accordion -->
+
+<div class="accordion"> <icon class="cost2"></icon>Cost Calculations<span></span></div>
+<div class="panel">
+  <p>Calculations are made based on € <span id="pricePerKWh"></span> / kWh</p>
+  <info>Price per kWh can be set in the device settings.</info>
+</div>
+
+
+
+
+
+
+      </div>
+      <div class="slide power">
+        <!-- Energy related Data in here… -->
+        <div class="object">
+
+          <div class="row">
+            <fig class="fig_one">U</fig>
+           <strong><span class="voltage">0</span></strong>  V
+          </div>
+          <div class="row">
+            <fig class="fig_two">I</fig>
+           <strong><span class="ampere">0</span></strong> A
+           <label class="pill fig_two">Peak <span id="maxA">0</span> A</label>
+          </div>
+          <div class="row">
+            <fig class="fig_three">P</fig>
+         <strong><span class="watts">0</span></strong> W
+         <label class="pill fig_three">Peak <span class="maxWatts">0</span></label>
+
+          </div>
+          <div class="row">
+            <fig>C</fig>
+            <strong><span class="usedAh">0</span></strong> <span class="usedAh_label">mAh</span> 
+
+          </div>
+
+
+       </div>
+
+
+         <div class="chartcontainer">
+          <div class="charttitle">
+            <icon class="graph"></icon>
+            60s History (A)<br>
+            <span>Updates every second</span>
+          <div class="sum blue">
+            <span id="maxA_min">0</span> A max
+        
+          </div>
+          </div>
+          <canvas id="ampsChart" width="400" height="200"></canvas>
+          <div class="chart-tooltip"></div>
+
+        </div>
+
+         </div>
+    </div>
+  </div>
+  
+
+
+  <div id="info" style="display: none;">
+    <p><strong>Screen:</strong> <span id="screen"></span></p>
+    <p><strong>Current Direction:</strong> <span id="cur_dir"></span></p>
+    <p><strong>last60Amps:</strong> <span id="last60Amps"></span> Ah</p>
+  </div>
+
+<div class="credis">ESP-Meter by Albert Kravcov</div>
+</div>
+
+
+
+
+<script src="script.js"></script>
+</body>
+</html>

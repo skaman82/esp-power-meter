@@ -1,61 +1,57 @@
-// HARDWARE DFROBOT Beetle ESP32-C3 ()
-// Running at 80MHz
-
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 #include <FS.h>
 #include <LittleFS.h>
 #include <time.h>
-#include <Preferences.h> 
-Preferences preferences;  
+#include <Preferences.h>  
+Preferences preferences;  // Declare this globallychar AP_SSID[32];
 #include <INA226_WE.h>
 #include <Arduino.h>
 #include <Wire.h>
 #include <EEPROM.h>
 #include <esp_system.h>
-#include "RTClib.h"
 
 
 //CONFIG START >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
-//MAIN FUNCTIONS:
-#define OLED            // OLED Display 
-#define MQTT          // USE AS SENSOR IN Home Assistant - won't work in AP Mode
-#define WEBSERVER     // WEB UI
+#define OLED  // Enable OLED Display 
+#define MQTT  // Enable MQTT for Home Assistant
+#define WEBSERVER    // Enable Web UI
 
-//Device Settings START (no need to configure this if using an OLED screen and buttons)
-float deviceCurrent = 0.013;      // 13 mA in normal mode //
-float deviceCurrentWifi = 0.036;  // 36 mA in WiFi Mode //34 no OLED @160mhz - 31ma @ 80mhz
-byte batteryType = 2;             // 0:LiIon; 1:LiPo; 2:LiFePO4;
+
+
+//Device Settings START (No need to configure when using an OLED screen and buttons)
+float deviceCurrent = 0.017;      // 17 mA in normal mode
+float deviceCurrentWifi = 0.050;  // 50 mA in WiFi Mode
+byte batteryType = 0;             // 0:LiIon; 1:LiPo; 2:LiFePO4;
 int cellcount = 4;                // define Cellcount of the Li-Ion battery
-float batteryCapacityAh = 50.00;  // Full battery capacity in Ah eg 6.6 Ah
+float batteryCapacityAh = 50;     // Full battery capacity in Ah eg 6.6 Ah
 byte orientation = 1;             // Screen orientation
 byte screen = 0;                  // default start screen (0-2)
 byte wifiEnabled = 1;             // WiFi active or not
-float pricePerKWh = 0.327;        // 30.5 cents per kWh
+float pricePerKWh = 0.305;         // 30.5 cents per kWh
 
-//Device Settings END
-const char* ssid = "airport";
-const char* password = "babylon5";
-const char* AP_PASSWORD = "12345678"; //Password for AP mode
-
+//Device Settings END 
 
 #ifdef OLED
 #include <U8g2lib.h>
-//OLED TYPE SELECTION (Uncomment the right one for you)
+//OLED SELECTION (Uncomment the right one for you)
 //U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 //U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 //U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/8);
 U8G2_SH1107_SEEED_128X128_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 #endif
 
+// ===== NETWORK CONFIGURATION =====
+const char* WIFI_SSID = "airport";
+const char* WIFI_PASSWORD = "xxx";
+const char* AP_PASSWORD = "12345678";
 
 #ifdef MQTT
-// MQTT Settings
 #include <PubSubClient.h>
-const char* mqtt_server = "homeassistant.local";  // or IP of HA
 //const char* mqtt_server = "192.168.4.2";  // Your Mac's IP in AP network
+const char* mqtt_server = "homeassistant.local";  // or IP of HA
 const int mqtt_port = 1883;
 const char* mqtt_user = "mqtt_user";
 const char* mqtt_pass = "mqtt_password";
@@ -67,6 +63,7 @@ PubSubClient client(espClient);
 //CONFIG END >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 
+
 char AP_SSID[32];
 // Create server on port 80
 static AsyncWebServer server(80);
@@ -74,22 +71,15 @@ static AsyncWebServer server(80);
 #define BUTTON1_PIN 1
 #define BUTTON2_PIN 2
 
-RTC_DS3231 rtc;
-DateTime now;
-
 float selfconsumption;
-
-long nowSecs = 0;
-long lastEnergySecond = 0;
-long lastHourTimestamp = 0;
-long lastCapacityTimestamp = 0;
-byte oldHour = 255;  // Initialize to impossible hour so first update triggers logging
-byte newHour = 0;
 
 float remainingCapacityAh = 0;
 int remainingCapacitymAh = 0;
 unsigned long previousMillis = 0;
 const unsigned long interval = 500;  // Interval (500 ms)
+const unsigned long sensorInterval = 1000;
+unsigned long lastMqttAttempt = 0;
+const unsigned long mqttRetryInterval = 5000;
 
 const unsigned long longPressTime = 500; // milliseconds
 bool button1State = false;
@@ -161,19 +151,21 @@ bool statsSaved = true;
 
 
 // Energy tracking
-double accumulatedWh = 0.0;
+unsigned long lastEnergySecondMillis = 0;
+unsigned long hourStartMillis = 0;
+float accumulatedWh = 0;
 float hourlyKWh[12] = {0};  // stores last 12 hours kWh values
 float historyCapacity[72];  // 72 × 10min = 720min = 12h
 float historyVoltage[72] = {0};
+unsigned long lastCapacityMinuteMillis = 0;
 int capacityIndex = 0;
 
 float maxA = 0.0;
 float maxA_min = 0.0;
 float last60Amps[60];  // Stores last 60 seconds of amp readings (1 per sec)
-
 unsigned long lastAmpSecondMillis = 0;
-bool hasLoggedThis10Min = false;
-char timeChars[5] = {'0', '0', ':', '0', '0'};  // e.g. 00:00
+
+
 
 
 // Li-ion (typical)
@@ -191,14 +183,9 @@ const int lifepo4Points = 9;
 const float lifepo4Voltage[lifepo4Points]  = {3.65, 3.45, 3.40, 3.35, 3.30, 3.25, 3.20, 3.10, 2.90};
 const float lifepo4Capacity[lifepo4Points] = {100,   95,   90,   80,   60,   40,   25,   10,    0};
 
-
 INA226_WE ina226 = INA226_WE(I2C_ADDRESS);
 
-
-#ifdef MQTT
-const unsigned long mqttRetryInterval = 5000;
-unsigned long lastMqttAttempt = 0;
-
+// Sensor data structure
 struct SensorData {
   float voltage = 0.0;
   float capacity = 0.0;
@@ -215,7 +202,6 @@ struct SensorData {
 };
 
 SensorData sensorData;
-#endif
 
 // Helper to convert __TIME__ (e.g. "14:33:12") to a unique number
 int getCompileTimeSeed() {
@@ -232,85 +218,53 @@ int getCompileTimeSeed() {
 
 
 
-
+#ifdef MQTT
+/**
+ * Initialize MQTT client for Home Assistant integration
+ * Sets up connection parameters and buffer sizes
+ */
+void initializeMQTT() {
+  client.setServer(mqtt_server, mqtt_port);
+  client.setKeepAlive(60);
+  client.setBufferSize(512); // Increase buffer size for larger messages
+  Serial.println("MQTT client initialized");
+}
+#endif
 
 void setup() {
 
+  // GENERATING SSID Name:
+preferences.begin("esp32meter", false); // Open or create namespace
+
+  if (!preferences.isKey("ssid")) {
+    // Generate and store a new 3-digit suffix
+    randomSeed(esp_random()); // Use ESP32's hardware RNG
+    int suffix = random(100, 1000); // 100 to 999
+
+    snprintf(AP_SSID, sizeof(AP_SSID), "ESP32-Meter %d", suffix);
+    preferences.putString("ssid", AP_SSID);  // Save the SSID
+  } else {
+    // Load previously saved SSID
+    String storedSSID = preferences.getString("ssid", "ESP32-Meter");
+    storedSSID.toCharArray(AP_SSID, sizeof(AP_SSID));
+  }
+
+  preferences.end();
+
   Serial.begin(9600);  // Serielle Verbindung starten, damit die Daten am Seriellen Monitor angezeigt werden.
+
+  EEPROM.begin(512); // Required for ESP32 (allocate flash space)
 
   pinMode(BUTTON1_PIN, INPUT_PULLUP);
   pinMode(BUTTON2_PIN, INPUT_PULLUP);
 
-  // Initialize preferences
-  initializeSSID();
-  
-  // Initialize hardware
-  initializeHardware();
-
-  // Initialize EEPROM
-  #ifdef OLED
-  initializeEEPROM();
-  #endif
-
-if (wifiEnabled == 1) {
-  // Initialize WiFi
-  initializeWiFi();
-
-  #ifdef MQTT
-  // Initialize MQTT
-  initializeMQTT();
-  #endif
-  
-  #ifdef WEBSERVER
-  // Initialize Webserver
-  initializeWebServer();
-  #endif
-
-  selfconsumption = deviceCurrentWifi;
-}
-else {
-  selfconsumption = deviceCurrent;
-}
-
-//You can prefill the arrays with 0s
-  for (int i = 0; i < 60; i++) {
-  last60Amps[i] = 0.0;
-  }
-for (int i = 0; i < 72; i++) {
-  historyCapacity[i] = 0.0;
-}
-  for (int i = 0; i < 12; i++) {
-      hourlyKWh[i] = 0.000;
-  }
-
-}
-
-
-void initializeSSID() {
-  preferences.begin("esp32meter", false);
-  
-  if (!preferences.isKey("ssid")) {
-    randomSeed(esp_random());
-    int suffix = random(100, 1000);
-    snprintf(AP_SSID, sizeof(AP_SSID), "ESP32-Meter-%d", suffix);
-    preferences.putString("ssid", AP_SSID);
-  } else {
-    String storedSSID = preferences.getString("ssid", "ESP32-Meter");
-    storedSSID.toCharArray(AP_SSID, sizeof(AP_SSID));
-  }
-  
-  preferences.end();
-  Serial.println("SSID: " + String(AP_SSID));
-}
-
-
-void initializeHardware() {
-
-Wire.begin();
+  Wire.begin();
   //Wire.setClock(400000UL);
+  #ifdef OLED
   //u8g2.setBusClock(400000UL);
-
+  #endif
   ina226.init();
+  Serial.println("INIT");  // shows the voltage measured
 
   /* Set Number of measurements for shunt and bus voltage which shall be averaged
   * Mode *     * Number of samples *
@@ -324,7 +278,6 @@ Wire.begin();
   AVERAGE_1024      1024
   */
   ina226.setAverage(AVERAGE_64);  // choose mode and uncomment for change of default
-  ina226.setMeasureMode(CONTINUOUS);
 
   /* Set conversion time in microseconds
      One set of shunt and bus voltage conversion will take: 
@@ -353,77 +306,15 @@ Wire.begin();
   //ina226.setResistorRange(0.004, 20);   // R004 4 MOhm resistor > 0,0819175 / 0,004 = 20,479375 A max
   ina226.setResistorRange(0.00198, 20);   // R002 2 MOhm resistor > 0,0819175 / 0,002 = 40,95875 A max
   //ina226.setResistorRange(0.00099, 40);   // R001 1 MOhm resistor > 0,0819175 / 0,001 = 81,9175 A max
+
   //ina226.setResistorRange(0.000515,40.0); // 0.0005 > 05m
   ina226.waitUntilConversionCompleted();  //if you comment this line the first data might be zero
-  Serial.println("INA226 sensor initialized successfully");
-
-
-//RTC INIT
- // if (! rtc.begin()) {
- //   Serial.println("Couldn't find RTC");
- //   Serial.flush();
- //   abort();
- // }
-
-  rtc.begin();
-
-  if (rtc.lostPower()) {
-    Serial.println("RTC lost power, let's set the time!");
-    // When time needs to be set on a new device, or after a power loss, the
-    // following line sets the RTC to the date & time this sketch was compiled
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    // This line sets the RTC with an explicit date & time, for example to set
-    // January 21, 2014 at 3am you would call:
-    // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
-  }
-
-  // When time needs to be re-set on a previously configured device, the
-  // following line sets the RTC to the date & time this sketch was compiled
-  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  // This line sets the RTC with an explicit date & time, for example to set
-  // January 21, 2014 at 3am you would call:
-  // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
-
-
-DateTime now = rtc.now();
-  Serial.println("RTC initialized successfully");
-
 
 #ifdef OLED
-//OLED INIT
-
-  u8g2.begin();
-  u8g2.setDisplayRotation(U8G2_R1);
-  //u8g2.setContrast(255);
-
-  if (orientation == 0) {
-      u8g2.setDisplayRotation(U8G2_R1);
-      u8g2.clear();
-    } 
-    else if (orientation == 1) {
-      u8g2.setDisplayRotation(U8G2_R2);
-      u8g2.clear();
-    } 
-    else if (orientation == 2) {
-      u8g2.setDisplayRotation(U8G2_R3);
-      u8g2.clear();
-    }
-    else if (orientation == 3) {
-      u8g2.setDisplayRotation(U8G2_R0);
-      u8g2.clear();
-    } 
-      Serial.println("OLED initialized successfully");
-
-#endif
-
-
-}
-
-void initializeEEPROM() {
-EEPROM.begin(512); // Required for ESP32 (allocate flash space)
 // READ FROM EEPROM
+
 //SETTINGS
-Serial.println("Getting config from EEPROM:"); 
+Serial.println("Getting COFIG:"); 
 
        batteryType = EEPROM.read(typeAddress); //batteryType
 
@@ -431,7 +322,7 @@ Serial.println("Getting config from EEPROM:");
       if (batteryType > 2) { //check for valid batery type
         batteryType = 0;
       }
-      
+  
        cellcount = EEPROM.read(cellAddress); //cellcount
        batteryCapacityAh = EEPROM.get(cap_Address, batteryCapacityAh); //Capacity  > 999.9 Ah
        pricePerKWh = EEPROM.get(price_Address, pricePerKWh); //Price per kWh > 0,00 ct
@@ -466,19 +357,19 @@ if (screen > 2){ screen = 0; }
 orientation = EEPROM.read(orientation_Address);
 if (orientation > 3){ orientation = 0; }
 
-Serial.print("batteryType: "); 
+Serial.print("batteryType "); 
 Serial.println(batteryType); 
-Serial.print("cellcount: "); 
+Serial.print("cellcount "); 
 Serial.println(cellcount); 
-Serial.print("batteryCapacityAh: "); 
+Serial.print("batteryCapacityAh "); 
 Serial.println(batteryCapacityAh); 
-Serial.print("pricePerKWh: "); 
+Serial.print("pricePerKWh "); 
 Serial.println(pricePerKWh); 
-Serial.print("wifiEnabled: "); 
+Serial.print("wifiEnabled "); 
 Serial.println(wifiEnabled); 
-Serial.print("orientation: "); 
+Serial.print("orientation "); 
 Serial.println(orientation); 
-Serial.print("screen: "); 
+Serial.print("screen "); 
 Serial.println(screen); 
 
 
@@ -504,10 +395,10 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
   EEPROM.commit();
 }
 
-  Serial.println("Getting stats from EEPROM:"); 
-  Serial.print("remainingCapacityAh: ");
+  Serial.println("Getting STATS:"); 
+  Serial.print("remainingCapacityAh ");
   Serial.println(remainingCapacityAh); 
-  Serial.print("totalKWh: ");
+  Serial.print("totalKWh ");
   Serial.println(totalKWh); 
     
 
@@ -518,59 +409,79 @@ if (isnan(totalKWh) || totalKWh < 0 || totalKWh > 100000) {
 
   totalWh = totalKWh * 1000.0;
   totalPrice = totalKWh * pricePerKWh;
-}
-
-void initializeWiFi() {
-  WiFi.mode(WIFI_AP_STA);
-  
-  // Start Access Point
-  WiFi.softAP(AP_SSID, AP_PASSWORD);
-  Serial.println("Access Point: " + String(AP_SSID));
-  Serial.println("AP IP: " + WiFi.softAPIP().toString());
-  
-  // Try to connect to WiFi
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
-  
-  int retry = 0;
-  while (WiFi.status() != WL_CONNECTED && retry < 20) {
-    delay(500);
-    Serial.print(".");
-    retry++;
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
-  } else {
-    Serial.println("\nWiFi connection failed - AP mode only");
-  }
-}
 
 
-#ifdef MQTT
-void initializeMQTT() {
-  client.setServer(mqtt_server, mqtt_port);
-  client.setKeepAlive(60);
-  client.setBufferSize(512); // Increase buffer size for larger messages
-}
+//OLED INIT
+  u8g2.begin();
+  u8g2.setDisplayRotation(U8G2_R1);
+  //u8g2.setContrast(255);
+
+  if (orientation == 0) {
+      u8g2.setDisplayRotation(U8G2_R1);
+      u8g2.clear();
+    } 
+    else if (orientation == 1) {
+      u8g2.setDisplayRotation(U8G2_R2);
+      u8g2.clear();
+    } 
+    else if (orientation == 2) {
+      u8g2.setDisplayRotation(U8G2_R3);
+      u8g2.clear();
+    }
+    else if (orientation == 3) {
+      u8g2.setDisplayRotation(U8G2_R0);
+      u8g2.clear();
+    } 
 #endif
 
-void initializeWebServer() {
+
 ///SERVER INIT
 // Initialize LittleFS
   if (!LittleFS.begin(true)) {
     Serial.println("Failed to mount LittleFS");
     return;
   }
-  Serial.println("LittleFS mounted successfully");
+  Serial.println("LittleFS mounted successfully.");
 
+
+
+if (wifiEnabled == 1) {
+
+WiFi.mode(WIFI_AP_STA);
+    
+    // Start Access Point
+    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    Serial.println("Access Point: " + String(AP_SSID));
+    Serial.println("AP IP: " + WiFi.softAPIP().toString());
+    
+    // Try to connect to existing WiFi
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.print("Connecting to WiFi");
+    
+    int retry = 0;
+    while (WiFi.status() != WL_CONNECTED && retry < 20) {
+        delay(500);
+        Serial.print(".");
+        retry++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
+    } else {
+        Serial.println("\nWiFi connection failed - AP mode only");
+    }
+
+#ifdef MQTT
+  initializeMQTT();
+#endif
+
+#ifdef WEBSERVER
   // Serve static files from LittleFS
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 
   // API Endpoints
   server.on("/data", HTTP_GET, [](AsyncWebServerRequest *request) {
     String json = "{";
-    json += "\"now\":" + String(nowSecs) + ",";   // Include timestamp in response
     json += "\"batteryType\":\"" + String(batteryType) + "\",";
     json += "\"cellcount\":" + String(cellcount) + ",";
     json += "\"watts\":" + String(watts) + ",";
@@ -651,8 +562,30 @@ void initializeWebServer() {
   });
 
   server.begin();
+  #endif
   selfconsumption = deviceCurrentWifi;
-  Serial.println("Webserver started");
+  
+
+}
+else {
+  selfconsumption = deviceCurrent;
+}
+
+
+//ENERGY TRACKING
+  hourStartMillis = millis();
+
+//You can prefill the arrays with 0s
+  for (int i = 0; i < 60; i++) {
+  last60Amps[i] = 0.0;
+  }
+for (int i = 0; i < 72; i++) {
+  historyCapacity[i] = 0.0;
+}
+  for (int i = 0; i < 12; i++) {
+      hourlyKWh[i] = 0.000;
+  }
+
 }
 
 
@@ -672,11 +605,13 @@ void disableWiFiServer() {
   WiFi.mode(WIFI_OFF);
   wifiEnabled = 0;
   EEPROM.put(wifi_Address, wifiEnabled);  // total Wh produced
+
   //save wifi state
   EEPROM.commit();   // Also required on ESP32 to save changes to flash
-  delay(500);
-}
 
+  delay(500);
+  //Serial.println("Restarting...");
+}
 
 float estimateCapacity(float voltage, const float* volts, const float* caps, int size) {
   if (voltage >= volts[0]) return 100.0;
@@ -695,40 +630,46 @@ float estimateCapacity(float voltage, const float* volts, const float* caps, int
 }
 
 
-void updateTime() {
-  now = rtc.now();
-  nowSecs = now.unixtime();
-  newHour = now.hour();  // Track current hour for hourly logging
-}
 
 void sensorread() {
+
   ina226.readAndClearFlags();
   voltage = ina226.getBusVoltage_V();
   Ampere = ina226.getCurrent_A();
-  mAmpere = ina226.getCurrent_mA();
+  mAmpere = ina226.getCurrent_mA() ;
   watts = voltage * Ampere;
 
-  const float deadbandThreshold = 0.01; // 10 mA
 
-  // Determine direction and normalize Ampere
-  if (Ampere < -deadbandThreshold) {
-    cur_dir = 2; // Charging
-    Ampere = -Ampere;
-    watts = -watts;
-    mAmpere = -mAmpere;
-  } else if (Ampere > deadbandThreshold) {
-    cur_dir = 1; // Discharging
-  } else {
-    cur_dir = 0; // Idle
-    Ampere = 0;
-    mAmpere = 0;
-  }
 
-  float real_Ampere = Ampere + selfconsumption;
-  int real_mAmpere = (real_Ampere * 1000.0);
+const float deadbandThreshold = 0.01; // 10 mA
 
-  if (Ampere > maxA) maxA = Ampere;
-  if (watts > maxWatts) maxWatts = watts;
+// Determine direction and normalize Ampere
+if (Ampere < -deadbandThreshold) {
+  cur_dir = 2; // Charging
+  Ampere = -Ampere;
+  watts = -watts;
+  mAmpere = -mAmpere;
+} else if (Ampere > deadbandThreshold) {
+  cur_dir = 1; // Discharging
+} else {
+  cur_dir = 0; // Idle
+  Ampere = 0;
+  mAmpere = 0;
+}
+
+// Apply self-consumption **after** correcting direction
+float real_Ampere = Ampere + selfconsumption;
+int real_mAmpere = (real_Ampere * 1000.0);
+
+// === Update Max Amp Since Start ===
+if (Ampere > maxA) {
+  maxA = Ampere;
+}
+// === Update Max Watts Since Start ===
+if (watts > maxWatts) {
+  maxWatts = watts;
+}
+
 
   unsigned long currentMicros = micros();
 
@@ -737,21 +678,29 @@ void sensorread() {
 
     if (abs(mAmpere) <= 4) mAmpere = 0;
 
-    float usedmAh = (real_Ampere * 1000.0) / 3600.0;
+    //float usedAh = Ampere / 3600.0;  // Local, for this cycle
+    float usedmAh = (real_Ampere * 1000.0) / 3600.0;  // Convert A to mAh per second
 
-    if (cur_dir == 1) {
-      remainingCapacityAh -= usedmAh / 1000.0;
-      totalUsedmAh -= usedmAh;
-    } else if (cur_dir == 2) {
-      remainingCapacityAh += usedmAh / 1000.0;
-      totalUsedmAh += usedmAh;
-    }
+if (cur_dir == 1) {  // Discharging
+  remainingCapacityAh -= usedmAh / 1000.0;
+  totalUsedmAh -= usedmAh;  // ✅ subtract when discharging
+}
+else if (cur_dir == 2) {  // Charging
+  remainingCapacityAh += usedmAh / 1000.0;
+  totalUsedmAh += usedmAh;  // ✅ add when charging
+}
+//keep safety clamps
+remainingCapacityAh = constrain(remainingCapacityAh, 0.0, batteryCapacityAh);
 
-    remainingCapacityAh = constrain(remainingCapacityAh, 0.0, batteryCapacityAh);
 
+    if (remainingCapacityAh < 0) remainingCapacityAh = 0;
+
+    // Prevent premature overwrite in first 5 seconds
     if (millis() > 5000) {
-      if (capacity >= 99.9) remainingCapacityAh = batteryCapacityAh;
-      else if (capacity <= 0.5) remainingCapacityAh = 0;
+      if (capacity >= 99.9)
+        remainingCapacityAh = batteryCapacityAh;
+      else if (capacity <= 0.5)
+        remainingCapacityAh = 0;
     }
 
     remainingCapacitymAh = remainingCapacityAh * 1000.0;
@@ -759,107 +708,104 @@ void sensorread() {
     float deltaTimeHours = (currentMicros - lastUpdateMicros) / 3600000000.0;
     lastUpdateMicros = currentMicros;
 
-    if (cur_dir == 2) {
-      totalWh += watts * deltaTimeHours;
-      totalKWh = totalWh / 1000.0;
-      totalPrice = totalKWh * pricePerKWh;
-    }
+   if (cur_dir == 2) {
+  totalWh += watts * deltaTimeHours;
+  totalKWh = totalWh / 1000.0;
+  totalPrice = totalKWh * pricePerKWh;
+}
 
     cellvolt = voltage / cellcount;
 
-    switch (batteryType) {
-      case 0:
-        capacity = estimateCapacity(cellvolt, liionVoltage, liionCapacity, liionPoints);
-        break;
-      case 1:
-        capacity = estimateCapacity(cellvolt, lipoVoltage, lipoCapacity, lipoPoints);
-        break;
-      case 2:
-        capacity = estimateCapacity(cellvolt, lifepo4Voltage, lifepo4Capacity, lifepo4Points);
-        break;
-      default:
-        capacity = 0.0;
-        break;
-    }
+// Lookup capacity from appropriate curve
+switch (batteryType) {
+  case 0: // Li-ion
+    capacity = estimateCapacity(cellvolt, liionVoltage, liionCapacity, liionPoints);
+    break;
+  case 1: // LiPo
+    capacity = estimateCapacity(cellvolt, lipoVoltage, lipoCapacity, lipoPoints);
+    break;
+  case 2: // LiFePO4
+    capacity = estimateCapacity(cellvolt, lifepo4Voltage, lifepo4Capacity, lifepo4Points);
+    break;
+  default:
+    capacity = 0.0;
+    break;
+}
 
-    capacity = constrain(capacity, 0.0, 100.0);
+capacity = constrain(capacity, 0.0, 100.0);
 
-    if (cur_dir == 1) {
+    if (cur_dir == 1) {  // Discharging
       runtimeHours = (Ampere > 0) ? (remainingCapacityAh / Ampere) : -1;
-    } else if (cur_dir == 2) {
+    } else if (cur_dir == 2) {  // Charging
       runtimeHours = (Ampere > 0) ? ((batteryCapacityAh - remainingCapacityAh) / Ampere) : -1;
     } else {
-      runtimeHours = 0;
+      runtimeHours = 0;  // Unknown or idle
     }
 
     hours = static_cast<int>(runtimeHours);
     minutes = static_cast<int>((runtimeHours - hours) * 60);
   }
 
-// === Max current in last 60 seconds ===
-if (nowSecs != lastEnergySecond) {
-  lastEnergySecond = nowSecs;
+  // Track energy once per second
+  if (millis() - lastEnergySecondMillis >= 1000) {
+    lastEnergySecondMillis = millis();
 
-  // Shift the buffer left
+  // === Shift and Update Last 60 Seconds of Ampere Readings ===
   for (int i = 0; i < 59; i++) {
     last60Amps[i] = last60Amps[i + 1];
   }
+    last60Amps[59] = Ampere;
 
-  // Add current value
-  last60Amps[59] = Ampere;
-
-  // Recalculate the 60-second max
-  maxA_min = 0.0;
-  for (int i = 0; i < 60; i++) {
-    if (last60Amps[i] > maxA_min) {
-      maxA_min = last60Amps[i];
-    }
-  }
-}
-
-  // === Accumulate Wh while charging only ===
-  if (cur_dir == 2) {
-    accumulatedWh += watts / 3600.0;  // Convert W to Wh per second
-  }
-
-  // === RTC Logging ===
-  DateTime now = rtc.now();
-
-  // Log every 10 minutes on the dot
-  if (now.minute() % 10 == 0 && now.second() == 0) {
-  if (!hasLoggedThis10Min) {
-    hasLoggedThis10Min = true;
-
-    // Shift both arrays
-    for (int i = 0; i < 71; i++) {
-      historyCapacity[i] = historyCapacity[i + 1];
-      historyVoltage[i] = historyVoltage[i + 1];
+    // === Calculate Max Amp in Last 60 Seconds ===
+    maxA_min = 0.0;
+    for (int i = 0; i < 60; i++) {
+      if (last60Amps[i] > maxA_min) {
+        maxA_min = last60Amps[i];
+      }
     }
 
-    // Add latest values
-    historyCapacity[71] = capacity;
-    historyVoltage[71] = voltage;
-  }
-} else {
-  hasLoggedThis10Min = false;
+
+
+if (cur_dir == 2) {
+  accumulatedWh += watts / 3600.0;  // Only accumulate during charging
+}
+    // Rotate hourly buffer every hour
+    if (millis() - hourStartMillis >= 3600000UL) {
+      hourStartMillis += 3600000UL;
+
+      // Shift data left by 1 (drop oldest)
+      for (int i = 0; i < 11; i++) {
+  hourlyKWh[i] = hourlyKWh[i + 1];
 }
 
-  // Log energy hourly 
- if (newHour != oldHour) {
-  oldHour = newHour;
-
-  // Shift left
-  for (int i = 0; i < 11; i++) {
-    hourlyKWh[i] = hourlyKWh[i + 1];
+      // Store last hour's kWh at index 11
+      hourlyKWh[11] = accumulatedWh / 1000.0;   // Convert Wh to kWh
+      accumulatedWh = 0;
+    }
   }
 
-  // Log the accumulated charging energy for the past hour
-  hourlyKWh[11] = accumulatedWh / 1000.0;  // Convert Wh → kWh
-  accumulatedWh = 0;  // Reset for next hour
-  }
-  
 
-  #ifdef MQTT
+// Track capacity every 5 minutes (5 * 60 * 1000 = 300000 ms)
+if (millis() - lastCapacityMinuteMillis >= 600000UL) {  // 10 min
+  lastCapacityMinuteMillis += 600000UL;
+
+  // Shift array left by one (Capacity)
+  for (int i = 0; i < 71; i++) {
+    historyCapacity[i] = historyCapacity[i + 1];
+  }
+
+  // Add latest capacity to end
+  historyCapacity[71] = capacity;
+
+// Shift array left by one (Voltage)
+  for (int i = 0; i < 71; i++) {
+    historyVoltage[i] = historyVoltage[i + 1];
+  }
+  historyVoltage[71] = voltage;  // Store the bus voltage
+}
+
+
+#ifdef MQTT
   // Real sensor data
   sensorData.voltage = voltage;
   sensorData.Ampere = abs(Ampere);
@@ -876,9 +822,11 @@ if (nowSecs != lastEnergySecond) {
 
 }
 
+
 #ifdef MQTT
 void handleMQTT() {
   checkMQTTConnection();
+  
   if (client.connected()) {
     publishSensorData();
   }
@@ -916,7 +864,7 @@ void checkMQTTConnection() {
 void publishSensorData() {
   String baseTopic = "powermeter/" + WiFi.macAddress();
   
-  // Publish the 5 required sensor values 
+  // Publish the 5 required sensor values using your logic
   client.publish((baseTopic + "/capacity").c_str(), 
                  String(sensorData.soc, 1).c_str(), true);
   client.publish((baseTopic + "/voltage").c_str(), 
@@ -1008,7 +956,6 @@ void publishDiscoveryEntity(const char* name, const char* unit, const char* devi
   delay(200); // Longer delay between publications
 }
 
-
 #endif
 
 
@@ -1043,11 +990,11 @@ bool isPressed = digitalRead(pin) == LOW;
 
 
 #ifdef OLED
-
 void buttoncheck() {
 
 
 if (menu == 0) {
+ 
   if (pressedbt == 22) {
     menu = 1; //ENTER MENU SCREEN
     }
@@ -1069,11 +1016,13 @@ if (menu == 0) {
       //  EEPROM.put(kwhHistory_Address + i * sizeof(float), hourlyKWh[i]);
       //}
 
+
       EEPROM.commit();   // Also required on ESP32 to save changes to flash
       esp_restart();
  // Restart to re-enable Wi-Fi/server
     }
   }
+  
   if (pressedbt == 2) {
         if (screen == 0) {
         u8g2.clear();
@@ -1114,12 +1063,13 @@ if (menu == 0) {
   }
 
 }
+
 else if (menu == 1) {
 
    if (pressedbt == 2) { //NAVIGATE MENU 
     menustep = menustep +1; 
     //set constrains
-    if (menustep > 9) {
+    if (menustep > 8) {
       menustep = 0;
     }
     }
@@ -1188,7 +1138,7 @@ for (int i = 0; i < 12; i++) {
   hourlyKWh[i] = 0.0;
 }
 for (int i = 0; i < 72; i++) {
-  historyCapacity[i] = 0;
+  historyCapacity[i] = 0.0;
   historyVoltage[i] = 0.0;
 }
 for (int i = 0; i < 60; i++) {
@@ -1200,16 +1150,8 @@ for (int i = 0; i < 60; i++) {
        reset = 1;
     }
 
-    else if ((menustep == 8) && (pressedbt == 1)) { //RTC SET
+    else if ((menustep == 8) && (pressedbt == 1)) { //EXIT MENU
     
-      //ENTER TIME SUMMENU
-      menu = 4;
-      menustep = 0;
-    }
-
-
-    else if ((menustep == 9) && (pressedbt == 1)) { //EXIT MENU SCREEN
-
 //SAVE TO EPROM
        EEPROM.put(typeAddress, batteryType); //batteryType
        EEPROM.put(cellAddress, cellcount); //cellcount
@@ -1219,8 +1161,8 @@ for (int i = 0; i < 60; i++) {
        EEPROM.write(orientation_Address, orientation);
        EEPROM.put(remcap_Address, remainingCapacityAh); // remaining cap in Ah
        EEPROM.put(kwh_Address, totalKWh);  // tatal Wh produced
+
        EEPROM.commit();   // Also required on ESP32 to save changes to flash
-      
        Serial.println("Settings saved");
 
     saved = 0;
@@ -1311,55 +1253,12 @@ else if (menu == 3) { // CHAR MOD MENU PRICE
     }
     
 }
-else if (menu == 4) { // CHAR MOD MENU TIME
-
-  if (pressedbt == 2) { // → Navigate character
-    menustep++;
-
-    if (menustep == 2) menustep++; // Skip colon
-    if (menustep > 5) menustep = 0;
-  }
-
-  if ((menustep != 2 && menustep != 5) && pressedbt == 1) { // ↑ Increment digit
-    char &c = timeChars[menustep];
-
-    if (c >= '0' && c <= '9') {
-      c++;
-
-      if (c > '9') c = '0';
-
-      // Range validation
-      if (menustep == 0 && c > '2') c = '0'; // First hour digit max 2
-      if (menustep == 1 && timeChars[0] == '2' && c > '3') c = '0'; // If H1=2, then H2 max 3
-      if (menustep == 3 && c > '5') c = '0'; // First minute digit max 5
-    }
-  }
-
-  else if (menustep == 5 && pressedbt == 1) { // Confirm and set RTC
-    int hours = (timeChars[0] - '0') * 10 + (timeChars[1] - '0');
-    int minutes = (timeChars[3] - '0') * 10 + (timeChars[4] - '0');
-
-    if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
-      rtc.adjust(DateTime(2025, 1, 1, hours, minutes, 0)); // Use dummy date
-      Serial.print("Time updated to: ");
-      Serial.print(hours);
-      Serial.print(":");
-      Serial.println(minutes);
-    }
-
-    // Exit to main menu
-    menu = 1;
-    menustep = 0;
-  }
-}
  if (pressedbt != 0) {
     //Serial.print("Pressed button value: ");
     //Serial.println(pressedbt);
-    
     // Reset after sending
     pressedbt = 0;
   }
-
 }
 
 void draw() {
@@ -1458,6 +1357,7 @@ void draw() {
        u8g2.print("IDLE");
         runtimeHours = 0;  //reset counter while in idle mode
       }
+
 
      
       u8g2.setCursor(0, 72);
@@ -1592,6 +1492,7 @@ void draw() {
     //  u8g2.setFont(u8g2_font_fub11_tr);
       u8g2.println(" Wh ");
     }
+
       
     }
 
@@ -1637,8 +1538,8 @@ void draw() {
         u8g2.print(mAmpere);
         u8g2.setFont(u8g2_font_fub11_tr);
         u8g2.println(" mA");
-      }
 
+      }
       
       //3rd line
       //u8g2.setCursor(5, 95);
@@ -1667,11 +1568,12 @@ void draw() {
       u8g2.setCursor(0, 123);
       u8g2.print("PEAK ");
       u8g2.print(maxA, 2);
-      u8g2.print(" A");
+      u8g2.print(" A");    
     }
 
   } while (u8g2.nextPage());
 }
+
 
 
 
@@ -1751,17 +1653,7 @@ else {
     }
 
     u8g2.setCursor(5, 56);
-    u8g2.print("Set Time ");
-    u8g2.print(now.hour(), DEC);
-    u8g2.println(":");
-    if (now.minute() < 9) {
-    u8g2.print("0");
-    }
-    u8g2.print(now.minute(), DEC);
- 
-    u8g2.setCursor(5, 77);
     u8g2.println("Save & Exit");
-
 
     //Show SSID Name
     u8g2.setFont(u8g2_font_6x10_tr);
@@ -1769,14 +1661,14 @@ else {
     u8g2.print("SSID ");
     u8g2.print(AP_SSID);
     u8g2.setCursor(5, 124);
-    u8g2.print("IP ");
     if (WiFi.status() == WL_CONNECTED) {
-    u8g2.print(WiFi.localIP());
-    }
-    else {
+      u8g2.print(WiFi.localIP());
+    } else {
       u8g2.print("192.168.4.1");
     }
-    
+    #ifdef MQTT
+    u8g2.print(" MQTT:ON");
+    #endif
 }
 
 
@@ -1811,13 +1703,9 @@ else {
        else if ((submenu == 0) && (menustep == 8)) {
     u8g2.drawBox(0,42,128,20);
     }
-         else if ((submenu == 0) && (menustep == 9)) {
-    u8g2.drawBox(0,63,128,20);
-    }
 
     } while (u8g2.nextPage());
 }
-
 
 
 
@@ -1887,82 +1775,33 @@ void pricescreen() {
     } while (u8g2.nextPage());
 }
 
-
-
-void timescreen() {
-  // Populate timeChars[] with current time if this is the first call
-  static bool initialized = false;
-  if (!initialized) {
-    DateTime now = rtc.now();
-    int h = now.hour();
-    int m = now.minute();
-
-    timeChars[0] = '0' + (h / 10);
-    timeChars[1] = '0' + (h % 10);
-    timeChars[2] = ':'; // colon separator
-    timeChars[3] = '0' + (m / 10);
-    timeChars[4] = '0' + (m % 10);
-
-    initialized = true;
-  }
-
-  u8g2.firstPage();
-  do {
-    u8g2.setFont(u8g2_font_7x13B_tr);
-    u8g2.setCursor(5, 10);
-    u8g2.print("Set Time (24h)");
-
-    // Draw HH:MM characters
-    for (int i = 0; i < 5; i++) {
-      int x = 15 + i * 12;
-
-      if (i == 2) {
-        u8g2.setCursor(x, 30);
-        u8g2.print(":");
-        continue;
-      }
-
-      u8g2.setCursor(x, 30);
-      u8g2.print(timeChars[i]);
-
-      if (i == menustep) {
-        u8g2.drawFrame(x - 2, 18, 12, 14); // Highlight digit
-      }
-    }
-
-    // Draw EXIT button (as 6th step)
-    if (menustep == 5) {
-      u8g2.drawFrame(90, 20, 30, 16); // frame around "EXIT"
-    }
-    u8g2.setCursor(94, 32);
-    u8g2.print("OK");
-
-  } while (u8g2.nextPage());
-}
 #endif
+
 
 void loop() {
   handleButton(BUTTON1_PIN, button1State, button1PressTime, button1Handled, 1);
   handleButton(BUTTON2_PIN, button2State, button2PressTime, button2Handled, 2);
+  
+  sensorread();
 
+   if (millis() - lastSensorMillis >= sensorInterval) {
+    lastSensorMillis = millis();
 
-//GET TIME
-  if (millis() - lastSensorMillis >= 1000) {
-  lastSensorMillis = millis();
-  updateTime();    // Update RTC time every second
-  sensorread();    // Also call your sensor reading logic
-
-  #ifdef MQTT
- // Handle MQTT - now works in both AP and Station mode
+    #ifdef MQTT
+    // Handle MQTT - now works in both AP and Station mode
     if (WiFi.status() == WL_CONNECTED) {
     handleMQTT();  // no MQTT in AP-Mode
     }
   #endif
+   
   }
 
+  
   #ifdef OLED
   buttoncheck();
+  #endif
 
+  #ifdef OLED
   if (menu == 0) {
   draw();
   }
@@ -1974,9 +1813,6 @@ void loop() {
   }
    else if (menu == 3) {
   pricescreen();
-  }
-   else if (menu == 4) {
-  timescreen();
   }
   #endif
 }
