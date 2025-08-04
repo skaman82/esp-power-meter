@@ -613,9 +613,6 @@ void updateSensorData() {
     
     // Calculate power
     sensorData.watts = sensorData.voltage * sensorData.current;
-    if (sensorData.currentDirection == 2) {
-        sensorData.watts = -sensorData.watts; // Negative for charging
-    }
     
     // Update maximum values
     if (sensorData.current > sensorData.maxCurrent) {
