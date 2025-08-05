@@ -1,16 +1,6 @@
 # **ESP PowerMeter**
 
 Measuring and logging current/battery status. Solar panel tester and a Home Assistant MQTT battery sensor
-
-Device Image:
-![Device](img/device.png)
-
-Web Interface:
-![UI](img/ui.png)
-
-Custom INA266 PCB:
-![PCB](img/custom_board.jpg)
-
 ---
 
 ## **Features**
@@ -36,6 +26,17 @@ Custom INA266 PCB:
 - **3D Printed Case** (see STLs directory)  
 
 ---
+
+Device Image:
+![Device](img/device.png)
+
+Web Interface:
+![UI](img/ui.png)
+
+Custom INA266 PCB:
+![PCB](img/custom_board.jpg)
+
+
 
 ## **Connection Diagram**
 *To be determined (TBD)*  
