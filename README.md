@@ -9,7 +9,7 @@ Web Interface:
 ![UI](img/ui.png)
 
 Custom INA266 PCB:
-![Device](img/custom_board.jpg)
+![PCB](img/custom_board.jpg)
 
 ---
 
@@ -43,4 +43,7 @@ Custom INA266 PCB:
 ---
 
 ## **Button Mapping**
-![Device](img/device_operation.png)
+![Buttons](img/device_operation.png)
+
+## **MQTT Entities**
+![MQTT](img/ha.png)
