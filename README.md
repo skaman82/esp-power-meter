@@ -2,6 +2,8 @@
 
 Measuring and logging current/battery status. Solar panel tester and a Home Assistant MQTT battery sensor
 ---
+Web Interface:
+![UI](img/ui.png)
 
 ## **Features**
 - **3 Modes:** Coulometer / Solar Tester / Power Meter  
@@ -29,9 +31,6 @@ Measuring and logging current/battery status. Solar panel tester and a Home Assi
 
 Device Image:
 ![Device](img/device.png)
-
-Web Interface:
-![UI](img/ui.png)
 
 Custom INA266 PCB:
 ![PCB](img/custom_board.jpg)
