@@ -12,7 +12,7 @@ Web Interface:
 - **Wi-Fi Support:** Access Point mode or join an existing network  
 - Additional **Web Interface**  
 - **MQTT Support:** can be used as a sensor with Home Assistant  
-- **Max Voltage:** 36V  
+- **Max Voltage:** 36V (listed 5V BEC supports max. 30V)  
 
 ---
 
@@ -26,6 +26,9 @@ Web Interface:
 - **2x Tactile Buttons** *(optional)*
 - **Real Time Clock RTC DS3231 module** *(optional)*  
 - **3D Printed Case** (see STLs directory)  
+
+## **RTC and NON-RTC Versions**
+The main difference to the non-RTC version ist that the RTC version of the code uses an DS3231 real time clock for measurement and displays graph labels with the correct time in the Web-UI. 
 
 ---
 
