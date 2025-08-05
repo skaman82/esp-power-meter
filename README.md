@@ -43,4 +43,4 @@ Custom INA266 PCB:
 ---
 
 ## **Button Mapping**
-*To be determined (TBD)*  
+![Device](img/device_operation.png)
