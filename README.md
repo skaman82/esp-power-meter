@@ -32,18 +32,19 @@ Web Interface:
 Device Image:
 ![Device](img/device.png)
 
+## **Button Mapping**
+![Buttons](img/device_operation.png)
+
+## **MQTT Entities**
+![MQTT](img/ha.png)
+
 Custom INA266 PCB:
 ![PCB](img/custom_board.jpg)
-
-
 
 ## **Connection Diagram**
 *To be determined (TBD)*  
 
 ---
 
-## **Button Mapping**
-![Buttons](img/device_operation.png)
 
-## **MQTT Entities**
-![MQTT](img/ha.png)
+
