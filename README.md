@@ -38,7 +38,7 @@ Device Image:
 ## **Button Mapping**
 ![Buttons](img/device_operation.png)
 
-## **MQTT Entities**
+## **MQTT Entities in Home Assistant**
 ![MQTT](img/ha.png)
 
 Custom INA266 PCB:
