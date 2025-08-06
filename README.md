@@ -1,6 +1,6 @@
 # **ESP PowerMeter**
 
-Energy logging current/battery status. Solar panel tester and a Home Assistant MQTT battery sensor
+Energy logging und current/voltage meter. Solar panel tester and a Home Assistant MQTT battery sensor
 ---
 Web Interface:
 ![UI](img/ui.png)
