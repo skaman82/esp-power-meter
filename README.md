@@ -41,7 +41,7 @@ Device Image:
 ## **MQTT Entities in Home Assistant**
 ![MQTT](img/ha.png)
 
-Custom INA266 PCB:
+Custom INA266 Sensor PCB with optional DS3231:
 ![PCB](img/custom_board.jpg)
 
 ## **Connection Diagram**
